@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en" data-theme="mission">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TierHopper Home</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=VT323&display=swap" rel="stylesheet">
+<style>
+:root, [data-theme="mission"] {
+  --bg: #07090d; --panel: #0d1117; --panel-2: #11161f; --line: #1c2330; --line-2: #263041;
+  --text: #e6edf3; --muted: #8b95a5; --faint: #5b6576;
+  --brand: #5ee0ff; --grid: rgba(94,224,255,.035);
+  --run: #4f8cff; --done: #34d399; --need: #ff9f43; --wait: #6b7280; --stop: #f87171;
+  --p-modal: #a78bfa; --p-kaggle: #2dd4bf; --p-lightning: #facc15; --p-runpod: #f472b6;
+  --font: "Geist", system-ui, sans-serif; --mono: "Geist Mono", ui-monospace, monospace;
+  --head: var(--font); --radius: 10px; --glow: 0 0 0 1px rgba(94,224,255,.08), 0 8px 30px rgba(0,0,0,.35);
+}
+[data-theme="crt"] {
+  --bg: #020602; --panel: #041006; --panel-2: #061609; --line: #0d3314; --line-2: #145220;
+  --text: #9dff9d; --muted: #4fd16a; --faint: #2c8a40;
+  --brand: #b6ff5e; --grid: rgba(80,255,120,.04);
+  --run: #5ee6ff; --done: #7dff7d; --need: #ffcc4d; --wait: #3f8f52; --stop: #ff6b6b;
+  --p-modal: #c4a2ff; --p-kaggle: #5effd8; --p-lightning: #fff45e; --p-runpod: #ff8fd0;
+  --font: "Geist Mono", monospace; --mono: "Geist Mono", monospace; --head: "VT323", monospace;
+  --radius: 2px; --glow: 0 0 12px rgba(80,255,120,.15);
+}
+[data-theme="light"] {
+  --bg: #f7f7f5; --panel: #ffffff; --panel-2: #fafaf9; --line: #e7e5e4; --line-2: #d6d3d1;
+  --text: #1c1917; --muted: #57534e; --faint: #a8a29e;
+  --brand: #0e7490; --grid: transparent;
+  --run: #2563eb; --done: #059669; --need: #d97706; --wait: #78716c; --stop: #dc2626;
+  --p-modal: #7c3aed; --p-kaggle: #0d9488; --p-lightning: #ca8a04; --p-runpod: #db2777;
+  --font: "Geist", system-ui, sans-serif; --mono: "Geist Mono", monospace; --head: var(--font);
+  --radius: 10px; --glow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+body {
+  min-height: 100vh;
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+[data-theme="crt"] body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50;
+  background: repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px);
+}
+[data-theme="crt"] { text-shadow: 0 0 6px rgba(120,255,140,.35); }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* top bar */
+.top { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 20px;
+  padding: 12px 24px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(10px); }
+.logo { display: flex; align-items: center; gap: 10px; font-family: var(--head); font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+[data-theme="crt"] .logo { font-size: 24px; }
+.logo svg { color: var(--brand); }
+.tabs { display: flex; gap: 2px; }
+.tab { white-space: nowrap; padding: 6px 12px; border-radius: 6px; color: var(--muted); }
+.tab:hover { color: var(--text); background: var(--panel-2); }
+.tab.on { color: var(--text); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
+.spacer { flex: 1; }
+.kbar { display: flex; align-items: center; gap: 10px; width: 300px; padding: 7px 10px; border: 1px solid var(--line);
+  border-radius: 8px; color: var(--faint); background: var(--panel); }
+.kbar kbd, .kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border: 1px solid var(--line-2); border-radius: 4px; color: var(--muted); }
+.kbar span { flex: 1; text-align: left; }
+.iconbtn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); border: 1px solid var(--line); }
+.iconbtn:hover { color: var(--text); }
+.themes { display: flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.themes button { padding: 4px 9px; border-radius: 6px; font-size: 12px; color: var(--muted); }
+.themes button.on { background: var(--panel-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-2); }
+.live { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--done); box-shadow: 0 0 0 0 var(--done); animation: pulse 2s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--done) 60%, transparent);} 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+/* layout */
+main { max-width: 1240px; margin: 0 auto; padding: 28px 24px 60px; }
+.grid { display: grid; grid-template-columns: 1fr 320px; gap: 20px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--glow); }
+.h { font-family: var(--head); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
+[data-theme="crt"] .h { font-size: 18px; letter-spacing: .04em; }
+
+/* overall */
+.overall { padding: 22px 24px; margin-bottom: 20px; }
+.overall-top { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.big { font-family: var(--head); font-size: 34px; font-weight: 600; letter-spacing: -.02em; }
+[data-theme="crt"] .big { font-size: 48px; font-weight: 400; }
+.stats { display: flex; gap: 28px; flex-wrap: wrap; }
+.stat b { display: block; font-family: var(--mono); font-size: 20px; font-weight: 500; }
+.stat small { color: var(--muted); font-size: 12px; }
+.stat.save b { color: var(--done); }
+.bar { position: relative; height: 10px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
+.overall .bar { height: 14px; margin-top: 18px; }
+.fill { position: absolute; inset: 0 auto 0 0; border-radius: 99px; transition: width 1s cubic-bezier(.2,.8,.2,1); }
+.fill.shine::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.25), transparent);
+  animation: shine 2.4s infinite; }
+@keyframes shine { from { transform: translateX(-100%);} to { transform: translateX(100%);} }
+.seg { display: flex; height: 100%; }
+.legend { display: flex; gap: 16px; margin-top: 10px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+.streak { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 9px; border-radius: 99px;
+  color: var(--done); border: 1px solid color-mix(in srgb, var(--done) 35%, transparent); background: color-mix(in srgb, var(--done) 8%, transparent); }
+
+/* project rows */
+.list-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px 10px; }
+.row { display: grid; grid-template-columns: minmax(180px, 1.2fr) 1.4fr 150px 90px; align-items: center; gap: 18px;
+  padding: 16px 20px; border-top: 1px solid var(--line); cursor: pointer; transition: background .15s; }
+.row:hover { background: var(--panel-2); }
+.row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.name { font-weight: 500; }
+.name small { display: block; margin-top: 3px; font-weight: 400; color: var(--muted); font-size: 12.5px; }
+.pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 500; padding: 4px 10px; border-radius: 99px;
+  border: 1px solid color-mix(in srgb, var(--c) 40%, transparent); color: var(--c); background: color-mix(in srgb, var(--c) 10%, transparent); white-space: nowrap; }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+.pill.run::before { animation: pulse 1.6s infinite; box-shadow: 0 0 0 0 var(--c); }
+.eta { text-align: right; font-family: var(--mono); color: var(--muted); font-size: 13px; }
+.need-actions { display: flex; gap: 8px; margin-top: 8px; }
+.btn { padding: 6px 12px; border-radius: 7px; border: 1px solid var(--line-2); font-size: 12.5px; font-weight: 500; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--need); color: #1a1206; border-color: transparent; }
+.btn.brand { background: var(--brand); color: #031318; border-color: transparent; }
+[data-theme="light"] .btn.brand { color: #fff; }
+
+/* side */
+.side { display: flex; flex-direction: column; gap: 20px; }
+.side .card { padding: 18px 20px; }
+.credit { margin-top: 14px; }
+.credit-top { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 7px; }
+.credit-top span:last-child { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+.credit .bar { height: 6px; }
+.credit small { display: block; margin-top: 5px; color: var(--faint); font-size: 11.5px; }
+.saving-big { font-family: var(--head); font-size: 36px; font-weight: 600; color: var(--done); margin: 10px 0 2px; letter-spacing: -.02em; }
+[data-theme="crt"] .saving-big { font-size: 52px; font-weight: 400; }
+.milestones { display: flex; gap: 6px; margin-top: 14px; }
+.ms { flex: 1; height: 28px; border-radius: 6px; border: 1px dashed var(--line-2); display: grid; place-items: center; font-size: 11px; color: var(--faint); font-family: var(--mono); }
+.ms.hit { border-style: solid; border-color: color-mix(in srgb, var(--done) 45%, transparent); color: var(--done); background: color-mix(in srgb, var(--done) 8%, transparent); }
+
+/* detail */
+.detail { display: none; }
+.detail.on { display: block; animation: rise .35s cubic-bezier(.2,.8,.2,1); }
+@keyframes rise { from { opacity: 0; transform: translateY(8px);} to { opacity: 1; transform: none; } }
+.back { color: var(--muted); font-size: 13px; margin-bottom: 14px; display: inline-flex; gap: 6px; }
+.back:hover { color: var(--text); }
+.dtitle { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
+.dtitle h1 { font-family: var(--head); font-size: 26px; font-weight: 600; letter-spacing: -.02em; }
+[data-theme="crt"] .dtitle h1 { font-size: 38px; font-weight: 400; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.tile { padding: 16px 18px; }
+.tile b { display: block; font-family: var(--mono); font-size: 22px; font-weight: 500; margin-top: 8px; }
+.tile.save b { color: var(--done); }
+.section { padding: 20px 22px; margin-bottom: 20px; }
+.journey { position: relative; margin: 34px 0 30px; }
+.jbar { display: flex; height: 34px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); }
+.jseg { display: flex; align-items: center; padding: 0 10px; font-size: 12px; font-weight: 500; color: #0b0b0b; white-space: nowrap; overflow: hidden; }
+.jrest { flex: 1; background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--muted) 18%, transparent) 6px 7px);
+  display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--muted); }
+.mark { position: absolute; top: -22px; font-size: 11.5px; color: var(--muted); font-family: var(--mono); transform: translateX(-50%); white-space: nowrap; }
+.mark.b { top: auto; bottom: -22px; }
+.now-line { position: absolute; top: -6px; bottom: -6px; width: 2px; background: var(--text); border-radius: 2px; }
+.now-line::after { content: "now"; position: absolute; bottom: -20px; left: 50%; transform: translateX(-50%); font-size: 11.5px; font-family: var(--mono); color: var(--text); }
+.stops .stop { display: grid; grid-template-columns: 160px 1fr 120px 1.4fr; gap: 16px; align-items: center; padding: 14px 0; border-top: 1px solid var(--line); }
+.stops .stop:first-of-type { border-top: 0; }
+.pname { display: flex; align-items: center; gap: 9px; font-weight: 500; }
+.pname i { width: 10px; height: 10px; border-radius: 3px; }
+.why { color: var(--muted); font-size: 13px; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.actions .btn { padding: 9px 16px; font-size: 13.5px; }
+
+/* hop map */
+.map { display: none; }
+.map.on { display: block; }
+.map svg { width: 100%; height: auto; display: block; }
+
+/* palette */
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); backdrop-filter: blur(3px); display: none; z-index: 60; align-items: flex-start; justify-content: center; padding-top: 14vh; }
+.scrim.on { display: flex; }
+.palette { width: min(640px, calc(100vw - 32px)); padding: 0; overflow: hidden; }
+.palette input { width: 100%; padding: 18px 20px; background: transparent; border: 0; border-bottom: 1px solid var(--line); color: var(--text); font: 500 16px var(--font); outline: none; }
+.pal-item { display: flex; justify-content: space-between; align-items: center; padding: 11px 20px; font-size: 13.5px; color: var(--muted); }
+.pal-item.on { background: var(--panel-2); color: var(--text); }
+.pal-ai { margin: 12px 16px 16px; padding: 14px 16px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); background: color-mix(in srgb, var(--brand) 6%, transparent); font-size: 13px; }
+.pal-ai b { color: var(--brand); font-weight: 500; }
+
+@media (max-width: 960px) {
+  .grid { grid-template-columns: 1fr; }
+  .kbar { display: none; }
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .stops .stop { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 640px) {
+  .top { padding: 10px 16px; gap: 10px; flex-wrap: wrap; }
+  .tabs { order: 3; width: 100%; overflow-x: auto; }
+  .live { display: none; }
+  main { padding: 20px 16px 48px; }
+  .row { grid-template-columns: 1fr auto; gap: 10px 12px; }
+  .row .bar { grid-column: 1 / -1; order: 3; }
+  .row .eta { order: 4; grid-column: 1 / -1; text-align: left; }
+  .big { font-size: 26px; }
+  .stats { gap: 18px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="logo">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="4" cy="18" r="2"/><circle cx="12" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M5.5 16.5 10.5 9.5M13.5 9.2l5 5.3" stroke-dasharray="2 2.5"/></svg>
+    TierHopper
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab on" data-view="home">Projects</button>
+    <button class="tab" data-view="map">Hop map</button>
+    <button class="tab">Providers</button>
+    <button class="tab">Reports</button>
+  </nav>
+  <div class="spacer"></div>
+  <button class="kbar" id="openK"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>Ask or run anything…</span><kbd>⌘K</kbd></button>
+  <div class="live"><span class="dot"></span>Live</div>
+  <div class="themes" role="group" aria-label="Theme">
+    <button data-theme="mission" class="on">Mission</button>
+    <button data-theme="crt">CRT</button>
+    <button data-theme="light">Light</button>
+  </div>
+  <button class="iconbtn" id="sound" title="Sounds off" aria-pressed="false">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path id="snd-x" d="m23 9-6 6M17 9l6 6"/></svg>
+  </button>
+</header>
+
+<main>
+  <!-- HOME -->
+  <section id="home">
+    <div class="card overall">
+      <div class="overall-top">
+        <div>
+          <div class="h">All projects</div>
+          <div class="big"><span class="mono" id="pct">58</span>% done</div>
+        </div>
+        <div class="stats">
+          <div class="stat"><b>3h 20m</b><small>time left</small></div>
+          <div class="stat"><b>$0.00</b><small>spent this month</small></div>
+          <div class="stat save"><b>$41.20</b><small>saved vs. market</small></div>
+        </div>
+      </div>
+      <div class="bar"><div class="fill shine" id="allbar" style="width:58%;background:linear-gradient(90deg,var(--run),var(--brand))"></div></div>
+      <div class="legend">
+        <span><i style="background:var(--run)"></i>2 running</span>
+        <span><i style="background:var(--need)"></i>1 needs your OK</span>
+        <span><i style="background:var(--wait)"></i>1 waiting in line</span>
+        <span><i style="background:var(--done)"></i>1 done today</span>
+        <span class="spacer"></span>
+        <span class="streak">🔥 12 days at $0</span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card" style="overflow:hidden">
+        <div class="list-head"><div class="h">Projects</div><span class="kbd">j / k to move · enter to open</span></div>
+
+        <div class="row" tabindex="0" data-open>
+          <div class="name">DocBench · layout-eval v3<small>Running on Kaggle · moved from Modal when its credit ran out</small></div>
+          <div class="bar"><div class="fill shine" style="width:62%;background:var(--run)"></div></div>
+          <div><span class="pill run" style="--c:var(--run)">Running</span></div>
+          <div class="eta">1h 10m left</div>
+        </div>
+
+        <div class="row" tabindex="0">
+          <div class="name">DocBench · OCR baseline sweep<small>Free credit ran out. Continue on RunPod for about $1.80?</small>
+            <div class="need-actions"><button class="btn primary">Approve $1.80</button><button class="btn">Wait for free credit</button></div>
+          </div>
+          <div class="bar"><div class="fill" style="width:81%;background:var(--need)"></div></div>
+          <div><span class="pill" style="--c:var(--need)">Needs your OK</span></div>
+          <div class="eta">~25m left</div>
+        </div>
+
+        <div class="row" tabindex="0">
+          <div class="name">Table extraction · Qwen2.5-VL 7B<small>Running on Modal · 4 parts in parallel</small></div>
+          <div class="bar"><div class="fill shine" style="width:34%;background:var(--run)"></div></div>
+          <div><span class="pill run" style="--c:var(--run)">Running</span></div>
+          <div class="eta">1h 55m left</div>
+        </div>
+
+        <div class="row" tabindex="0">
+          <div class="name">Embedding benchmark v2<small>Starts when Kaggle hours reset on Saturday</small></div>
+          <div class="bar"><div class="fill" style="width:0%"></div></div>
+          <div><span class="pill" style="--c:var(--wait)">Waiting in line</span></div>
+          <div class="eta">Sat</div>
+        </div>
+
+        <div class="row" tabindex="0">
+          <div class="name">DocBench · reranker ablation<small>Results ready · 3 providers, $0 spent</small></div>
+          <div class="bar"><div class="fill" style="width:100%;background:var(--done)"></div></div>
+          <div><span class="pill" style="--c:var(--done)">Done</span></div>
+          <div class="eta">2h ago</div>
+        </div>
+      </div>
+
+      <aside class="side">
+        <div class="card">
+          <div class="h">Free credit left</div>
+          <div class="credit"><div class="credit-top"><span>Modal</span><span>$4.10 / $30</span></div>
+            <div class="bar"><div class="fill" style="width:14%;background:var(--p-modal)"></div></div><small>Resets Oct 1 · use it first</small></div>
+          <div class="credit"><div class="credit-top"><span>Kaggle</span><span>18.5h / 30h</span></div>
+            <div class="bar"><div class="fill" style="width:62%;background:var(--p-kaggle)"></div></div><small>Resets Saturday</small></div>
+          <div class="credit"><div class="credit-top"><span>Lightning AI</span><span>11 / 15 credits</span></div>
+            <div class="bar"><div class="fill" style="width:73%;background:var(--p-lightning)"></div></div><small>Resets Oct 12 · estimated</small></div>
+          <div class="credit"><div class="credit-top"><span>RunPod <span class="kbd">paid</span></span><span>$0 / $20</span></div>
+            <div class="bar"><div class="fill" style="width:0%;background:var(--p-runpod)"></div></div><small>Only with your OK</small></div>
+        </div>
+        <div class="card">
+          <div class="h">Savings</div>
+          <div class="saving-big mono">$41.20</div>
+          <small style="color:var(--muted)">this month vs. on-demand GPU prices · 38.6 GPU-hours free</small>
+          <div class="milestones"><div class="ms hit">$10</div><div class="ms hit">$25</div><div class="ms">$50</div><div class="ms">$100</div></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- DETAIL -->
+  <section id="detail" class="detail">
+    <button class="back" id="back">← All projects</button>
+    <div class="dtitle"><h1>DocBench · layout-eval v3</h1><span class="pill run" style="--c:var(--run)">Running</span></div>
+
+    <div class="tiles">
+      <div class="card tile"><div class="h">Running for</div><b>2h 05m</b></div>
+      <div class="card tile"><div class="h">Time left</div><b>~1h 10m</b></div>
+      <div class="card tile"><div class="h">Providers used</div><b>2</b></div>
+      <div class="card tile save"><div class="h">Saved</div><b>$6.40</b></div>
+    </div>
+
+    <div class="card section">
+      <div class="h">Journey</div>
+      <div class="journey">
+        <span class="mark" style="left:0%;transform:none">started 09:12</span>
+        <span class="mark" style="left:100%;transform:translateX(-100%)">done ≈ 12:25</span>
+        <div class="jbar">
+          <div class="jseg" style="width:38%;background:var(--p-modal)">Modal · 1h 15m</div>
+          <div class="jseg" style="width:26%;background:var(--p-kaggle)">Kaggle · 50m</div>
+          <div class="jrest">≈ 1h 10m to go</div>
+        </div>
+        <div class="now-line" style="left:64%"></div>
+      </div>
+    </div>
+
+    <div class="card section stops">
+      <div class="h" style="margin-bottom:6px">Stops</div>
+      <div class="stop">
+        <div class="pname"><i style="background:var(--p-modal)"></i>Modal</div>
+        <div class="bar" style="height:6px"><div class="fill" style="width:40%;background:var(--p-modal)"></div></div>
+        <div class="mono" style="color:var(--muted)">40% · 1h 15m</div>
+        <div class="why">Moved on: the free monthly credit ran out</div>
+      </div>
+      <div class="stop">
+        <div class="pname"><i style="background:var(--p-kaggle)"></i>Kaggle</div>
+        <div class="bar" style="height:6px"><div class="fill shine" style="width:22%;background:var(--p-kaggle)"></div></div>
+        <div class="mono" style="color:var(--muted)">22% · 50m</div>
+        <div class="why">Here now · will move before the 12-hour session limit if needed</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn">Pause</button>
+      <button class="btn brand">Get results so far</button>
+      <button class="btn">Technical details →</button>
+    </div>
+  </section>
+
+  <!-- HOP MAP -->
+  <section id="map" class="map card section">
+    <div class="h">Hop map · live</div>
+    <svg viewBox="0 0 900 380" role="img" aria-label="Providers as nodes, jobs moving between them">
+      <defs><style>.edge{stroke:var(--line-2);stroke-width:1.5;fill:none;stroke-dasharray:4 6}.nl{fill:var(--text);font:500 14px var(--font)}.ns{fill:var(--muted);font:12px var(--mono)}</style></defs>
+      <path id="e1" class="edge" d="M170 120 C 330 40, 520 40, 690 120"/>
+      <path id="e2" class="edge" d="M170 120 C 250 260, 360 300, 450 300"/>
+      <path id="e3" class="edge" d="M690 120 C 640 260, 540 300, 450 300"/>
+      <circle r="5" fill="var(--run)"><animateMotion dur="3.2s" repeatCount="indefinite"><mpath href="#e1"/></animateMotion></circle>
+      <circle r="5" fill="var(--run)"><animateMotion dur="4.5s" repeatCount="indefinite" begin="1s"><mpath href="#e2"/></animateMotion></circle>
+      <g><circle cx="170" cy="120" r="44" fill="var(--panel-2)" stroke="var(--p-modal)" stroke-width="2"/><text class="nl" x="170" y="118" text-anchor="middle">Modal</text><text class="ns" x="170" y="136" text-anchor="middle">$4.10 left</text></g>
+      <g><circle cx="690" cy="120" r="44" fill="var(--panel-2)" stroke="var(--p-kaggle)" stroke-width="2"/><text class="nl" x="690" y="118" text-anchor="middle">Kaggle</text><text class="ns" x="690" y="136" text-anchor="middle">18.5h left</text></g>
+      <g><circle cx="450" cy="300" r="44" fill="var(--panel-2)" stroke="var(--p-lightning)" stroke-width="2"/><text class="nl" x="450" y="298" text-anchor="middle">Lightning</text><text class="ns" x="450" y="316" text-anchor="middle">11 credits</text></g>
+      <g opacity=".55"><circle cx="820" cy="310" r="32" fill="var(--panel-2)" stroke="var(--p-runpod)" stroke-width="1.5" stroke-dasharray="3 4"/><text class="ns" x="820" y="314" text-anchor="middle">RunPod</text></g>
+    </svg>
+  </section>
+</main>
+
+<div class="scrim" id="scrim">
+  <div class="card palette" role="dialog" aria-label="Command palette">
+    <input id="kin" value="run layout-eval on the cheapest 24 GB GPU" aria-label="Command">
+    <div class="pal-ai"><b>Plan preview</b> · Run <span class="mono">layout-eval-v3</span> on Kaggle (T4×2, 32 GB total) — free, about 3h. <span style="color:var(--muted)">Enter to confirm · Esc to cancel</span></div>
+    <div class="pal-item on"><span>Open “DocBench · layout-eval v3”</span><span class="kbd">↵</span></div>
+    <div class="pal-item"><span>Approve pending ($1.80 on RunPod)</span><span class="kbd">A</span></div>
+    <div class="pal-item"><span>Pause all running projects</span><span class="kbd">⇧P</span></div>
+    <div class="pal-item"><span>Switch theme</span><span class="kbd">T</span></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+  let soundOn = false, ctx;
+  const beep = (f = 660, d = .06) => {
+    if (!soundOn) return;
+    try { ctx = ctx || new AudioContext(); const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = f; o.type = "sine"; g.gain.setValueAtTime(.04, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + d); o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + d); } catch (e) {}
+  };
+  const show = id => {
+    ["home", "detail", "map"].forEach(v => $("#" + v).classList.toggle("on", v === id));
+    $("#home").style.display = id === "home" ? "" : "none";
+    $$(".tab").forEach(t => t.classList.toggle("on", (t.dataset.view === "map") === (id === "map") && !!t.dataset.view));
+    window.scrollTo({ top: 0 });
+  };
+  $$(".row").forEach(r => {
+    r.addEventListener("click", e => { if (e.target.closest("button")) return; beep(720); show("detail"); });
+    r.addEventListener("keydown", e => { if (e.key === "Enter") r.click(); });
+  });
+  $("#back").onclick = () => { beep(520); show("home"); };
+  $$(".tab[data-view]").forEach(t => t.onclick = () => show(t.dataset.view));
+  let saved; try { saved = localStorage.getItem("th-theme"); } catch (e) {}
+  const setTheme = th => { document.documentElement.dataset.theme = th;
+    $$(".themes button").forEach(b => b.classList.toggle("on", b.dataset.theme === th));
+    try { localStorage.setItem("th-theme", th); } catch (e) {} };
+  if (saved) setTheme(saved);
+  $$(".themes button").forEach(b => b.onclick = () => { setTheme(b.dataset.theme); beep(880, .04); });
+  $("#sound").onclick = () => { soundOn = !soundOn; $("#snd-x").style.display = soundOn ? "none" : "";
+    $("#sound").setAttribute("aria-pressed", soundOn); $("#sound").title = soundOn ? "Sounds on" : "Sounds off"; beep(990, .08); };
+  const openK = () => { $("#scrim").classList.add("on"); $("#kin").focus(); $("#kin").select(); beep(600, .05); };
+  $("#openK").onclick = openK;
+  $("#scrim").onclick = e => { if (e.target.id === "scrim") $("#scrim").classList.remove("on"); };
+  document.addEventListener("keydown", e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openK(); }
+    if (e.key === "Escape") $("#scrim").classList.remove("on");
+    if ($("#scrim").classList.contains("on") || e.target.tagName === "INPUT") return;
+    const rows = $$(".row"), i = rows.indexOf(document.activeElement);
+    if (e.key === "j") rows[Math.min(i + 1, rows.length - 1)].focus();
+    if (e.key === "k") rows[Math.max(i - 1, 0)].focus();
+  });
+  // live tick
+  let p = 58; setInterval(() => { if (p < 64) { p++; $("#pct").textContent = p; $("#allbar").style.width = p + "%"; } }, 4000);
+})();
+</script>
+</body>
+</html>

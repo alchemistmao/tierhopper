@@ -1,0 +1,108 @@
+# TierHopper provider registry (seed).
+# Values are best-known as of 2026-09-30 and are re-verified at `tierhopper connect` time
+# and by the weekly discovery run. `status` here is only the initial value; the live status
+# lives in the state store.
+#
+# max_concurrent = simultaneous attempts we allow (conservative for free tiers).
+# vram_gb is per GPU. usd_per_hour = on-demand market price, used for credit estimates and savings.
+
+providers:
+  modal:
+    name: Modal
+    kind: free
+    adapter: modal
+    signup_url: https://modal.com/signup
+    api_key_url: https://modal.com/settings/tokens
+    login_command: modal token new
+    requirements:
+      email: true
+      phone: false
+      card: true
+      notes: Billing docs say a payment method must be on file; Starter includes $30/month compute.
+    credit_model:
+      type: monthly_usd
+      amount: 30
+      resets: monthly
+      notes: No API for remaining credit on Starter; estimated from local usage x price.
+    gpu_catalog:
+      - {type: T4, vram_gb: 16, usd_per_hour: 0.59}
+      - {type: L4, vram_gb: 24, usd_per_hour: 0.80}
+      - {type: A10, vram_gb: 24, usd_per_hour: 1.10}
+      - {type: L40S, vram_gb: 48, usd_per_hour: 1.95}
+      - {type: A100-40GB, vram_gb: 40, usd_per_hour: 2.10}
+      - {type: A100-80GB, vram_gb: 80, usd_per_hour: 2.50}
+      - {type: H100, vram_gb: 80, usd_per_hour: 3.95}
+    max_session_hours: 24
+    max_concurrent: 8
+    spend_cap_usd: 0
+    validation_test: gpu-smoke-30s
+
+  kaggle:
+    name: Kaggle
+    kind: free
+    adapter: kaggle
+    signup_url: https://www.kaggle.com/account/login?phase=startRegisterTab
+    api_key_url: https://www.kaggle.com/settings/api
+    login_command: null
+    requirements:
+      email: true
+      phone: true
+      card: false
+      notes: Phone verification (in Kaggle settings) is required for GPU and internet in notebooks.
+    credit_model:
+      type: weekly_hours
+      amount: 30
+      resets: weekly
+      reset_weekday: 5
+      notes: Real values read at runtime with the quota API (`kaggle quota`).
+    gpu_catalog:
+      - {type: T4x2, vram_gb: 16, count: 2, usd_per_hour: 1.18}
+    max_session_hours: 12
+    max_concurrent: 1
+    spend_cap_usd: 0
+    validation_test: gpu-smoke-30s
+
+  lightning:
+    name: Lightning AI
+    kind: credit_program
+    adapter: lightning
+    signup_url: https://lightning.ai/sign-up
+    api_key_url: https://lightning.ai/
+    login_command: lightning login
+    requirements:
+      email: true
+      phone: true
+      card: false
+      notes: 5 credits on sign-up (+25 if you add a card), valid 12 months. Keys in Profile > Global Settings > Keys.
+    credit_model:
+      type: one_time_usd
+      amount: 5
+      resets: null
+      notes: No public balance API for personal accounts; estimated from local usage.
+    gpu_catalog:
+      - {type: T4, vram_gb: 16, usd_per_hour: 0.55}
+      - {type: L4, vram_gb: 24, usd_per_hour: 0.79}
+      - {type: L40S, vram_gb: 48, usd_per_hour: 2.14}
+    max_session_hours: null
+    max_concurrent: 2
+    spend_cap_usd: 0
+    validation_test: gpu-smoke-30s
+
+  runpod:
+    name: RunPod
+    kind: paid
+    adapter: runpod
+    signup_url: https://www.runpod.io/console/signup
+    api_key_url: https://www.runpod.io/console/user/settings
+    login_command: null
+    requirements: {email: true, phone: false, card: true, notes: Paid. Used only after explicit approval.}
+    credit_model: {type: pay_as_you_go, amount: 20, resets: monthly, notes: Hard cap of US$ 20/month.}
+    gpu_catalog:
+      - {type: L4, vram_gb: 24, usd_per_hour: 0.43}
+      - {type: RTX-4090, vram_gb: 24, usd_per_hour: 0.69}
+      - {type: A40, vram_gb: 48, usd_per_hour: 0.40}
+      - {type: A100-80GB, vram_gb: 80, usd_per_hour: 1.64}
+    max_session_hours: null
+    max_concurrent: 2
+    spend_cap_usd: 20
+    validation_test: gpu-smoke-30s

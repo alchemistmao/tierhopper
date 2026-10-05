@@ -1,0 +1,10 @@
+name: sharded
+project: tests
+entrypoint: python run.py
+gpu:
+  min_vram_gb: 12
+estimate_hours: 1
+shard:
+  over: data/*.txt
+  max_parallel: 3
+outputs: [results/]

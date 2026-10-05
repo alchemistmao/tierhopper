@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="560" viewBox="0 0 800 560">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="35%" r="75%"><stop offset="0" stop-color="#121a24"/><stop offset="1" stop-color="#07090d"/></radialGradient>
+    <linearGradient id="skin" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5ff0b0"/><stop offset="1" stop-color="#22b37a"/></linearGradient>
+    <linearGradient id="belly" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d9ffe9"/><stop offset="1" stop-color="#a8f0c8"/></linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <g id="pins" stroke-width="7" stroke-linecap="round">
+      <path d="M-52 -34v-16M-26 -34v-16M0 -34v-16M26 -34v-16M52 -34v-16M-52 34v16M-26 34v16M0 34v16M26 34v16M52 34v16"/>
+    </g>
+  </defs>
+  <rect width="800" height="560" fill="url(#bg)"/>
+  <g opacity=".06" stroke="#5ee0ff"><path d="M0 80H800M0 160H800M0 240H800M0 320H800M0 400H800M0 480H800M100 0V560M200 0V560M300 0V560M400 0V560M500 0V560M600 0V560M700 0V560"/></g>
+
+  <!-- left chip: paid, greyed -->
+  <g transform="translate(170 420)">
+    <ellipse cx="0" cy="70" rx="90" ry="10" fill="#000" opacity=".4"/>
+    <g stroke="#3a4352"><use href="#pins"/></g>
+    <rect x="-76" y="-34" width="152" height="68" rx="12" fill="#151b25" stroke="#3a4352" stroke-width="6"/>
+    <text x="0" y="12" text-anchor="middle" font-family="Menlo, monospace" font-weight="700" font-size="34" fill="#5b6576">$$$</text>
+    <path d="M-70 -30 L70 30" stroke="#f87171" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+  </g>
+  <!-- right chip: free, glowing -->
+  <g transform="translate(630 420)" filter="url(#glow)">
+    <ellipse cx="0" cy="70" rx="90" ry="10" fill="#000" opacity=".4"/>
+    <g stroke="#2dd4bf"><use href="#pins"/></g>
+    <rect x="-76" y="-34" width="152" height="68" rx="12" fill="#0b2a26" stroke="#2dd4bf" stroke-width="6"/>
+    <text x="0" y="12" text-anchor="middle" font-family="Menlo, monospace" font-weight="700" font-size="34" fill="#5effd8">FREE</text>
+  </g>
+
+  <!-- hop trail -->
+  <path d="M200 370 Q400 20 600 370" fill="none" stroke="#5ee0ff" stroke-width="6" stroke-dasharray="4 18" stroke-linecap="round" opacity=".8"/>
+
+  <!-- frog, mid-leap -->
+  <g transform="translate(410 190) rotate(14)">
+    <!-- back legs stretched behind -->
+    <path d="M-62 40 C-120 60 -150 100 -170 120" stroke="url(#skin)" stroke-width="26" stroke-linecap="round" fill="none"/>
+    <path d="M-40 52 C-90 92 -110 130 -120 150" stroke="url(#skin)" stroke-width="22" stroke-linecap="round" fill="none"/>
+    <ellipse cx="-176" cy="126" rx="20" ry="10" fill="#22b37a" transform="rotate(30 -176 126)"/>
+    <ellipse cx="-124" cy="158" rx="18" ry="9" fill="#22b37a" transform="rotate(60 -124 158)"/>
+    <!-- body -->
+    <ellipse cx="0" cy="20" rx="92" ry="66" fill="url(#skin)"/>
+    <ellipse cx="12" cy="40" rx="56" ry="36" fill="url(#belly)"/>
+    <!-- front arms reaching forward -->
+    <path d="M66 26 C110 30 128 52 140 70" stroke="url(#skin)" stroke-width="20" stroke-linecap="round" fill="none"/>
+    <path d="M40 56 C80 76 92 96 98 116" stroke="url(#skin)" stroke-width="18" stroke-linecap="round" fill="none"/>
+    <circle cx="144" cy="76" r="11" fill="#22b37a"/><circle cx="100" cy="122" r="10" fill="#22b37a"/>
+    <!-- eyes -->
+    <circle cx="-30" cy="-40" r="34" fill="url(#skin)"/><circle cx="34" cy="-40" r="34" fill="url(#skin)"/>
+    <circle cx="-30" cy="-40" r="23" fill="#fff"/><circle cx="34" cy="-40" r="23" fill="#fff"/>
+    <circle cx="-24" cy="-38" r="13" fill="#07090d"/><circle cx="40" cy="-38" r="13" fill="#07090d"/>
+    <circle cx="-19" cy="-43" r="4.5" fill="#fff"/><circle cx="45" cy="-43" r="4.5" fill="#fff"/>
+    <!-- grin + cheeks -->
+    <path d="M-34 4 Q4 42 46 4" stroke="#0b3d2a" stroke-width="7" fill="none" stroke-linecap="round"/>
+    <circle cx="-50" cy="6" r="9" fill="#f472b6" opacity=".45"/><circle cx="62" cy="6" r="9" fill="#f472b6" opacity=".45"/>
+  </g>
+  <!-- motion puffs -->
+  <g fill="#e6edf3" opacity=".25"><circle cx="230" cy="300" r="9"/><circle cx="210" cy="320" r="6"/><circle cx="196" cy="336" r="4"/></g>
+
+  <text x="400" y="540" text-anchor="middle" font-family="Helvetica Neue, Arial" font-weight="700" font-size="30" fill="#8b95a5" letter-spacing="1">HOP TILL THE CREDITS DROP</text>
+</svg>

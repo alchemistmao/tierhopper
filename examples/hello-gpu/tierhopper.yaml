@@ -1,0 +1,10 @@
+# Smallest possible TierHopper job: prove a GPU is there and do a bit of work on it.
+name: hello-gpu
+project: examples
+entrypoint: python main.py
+requirements: requirements.txt
+gpu:
+  min_vram_gb: 12
+estimate_hours: 0.05
+timeout_minutes: 15
+outputs: [results/]

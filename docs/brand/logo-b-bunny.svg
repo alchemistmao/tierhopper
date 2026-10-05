@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="560" viewBox="0 0 800 560">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="40%" r="75%"><stop offset="0" stop-color="#101b26"/><stop offset="1" stop-color="#07090d"/></radialGradient>
+    <linearGradient id="chip" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16212d"/><stop offset="1" stop-color="#0c131b"/></linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="800" height="560" fill="url(#bg)"/>
+  <!-- hop arcs from previous jumps -->
+  <path d="M60 470 Q170 300 280 470" fill="none" stroke="#5ee0ff" stroke-width="5" stroke-dasharray="3 16" stroke-linecap="round" opacity=".35"/>
+  <path d="M280 470 Q340 360 400 440" fill="none" stroke="#5ee0ff" stroke-width="5" stroke-dasharray="3 16" stroke-linecap="round" opacity=".6"/>
+  <ellipse cx="420" cy="482" rx="140" ry="16" fill="#000" opacity=".45"/>
+
+  <g transform="translate(420 300) rotate(-6)" filter="url(#glow)">
+    <!-- ears -->
+    <path d="M-62 -92 C-100 -250 -40 -290 -26 -160 L-22 -92Z" fill="url(#chip)" stroke="#5ee0ff" stroke-width="9" stroke-linejoin="round"/>
+    <path d="M62 -92 C116 -236 66 -280 30 -160 L22 -92Z" fill="url(#chip)" stroke="#5ee0ff" stroke-width="9" stroke-linejoin="round"/>
+    <path d="M-50 -110 C-72 -210 -46 -236 -38 -150Z" fill="#f472b6" opacity=".85"/>
+    <path d="M50 -110 C80 -200 60 -226 40 -150Z" fill="#f472b6" opacity=".85"/>
+    <!-- pins -->
+    <g stroke="#5ee0ff" stroke-width="9" stroke-linecap="round">
+      <path d="M-120 -40h-28M-120 0h-28M-120 40h-28M120 -40h28M120 0h28M120 40h28"/>
+      <path d="M-70 92v26M-24 92v26M24 92v26M70 92v26"/>
+    </g>
+    <!-- body (the chip) -->
+    <rect x="-120" y="-92" width="240" height="184" rx="30" fill="url(#chip)" stroke="#5ee0ff" stroke-width="9"/>
+    <rect x="-96" y="-68" width="192" height="136" rx="18" fill="none" stroke="#5ee0ff" stroke-width="2.5" opacity=".35"/>
+    <!-- face -->
+    <circle cx="-44" cy="-14" r="20" fill="#e6edf3"/><circle cx="44" cy="-14" r="20" fill="#e6edf3"/>
+    <circle cx="-38" cy="-11" r="10" fill="#07090d"/><circle cx="50" cy="-11" r="10" fill="#07090d"/>
+    <circle cx="-34" cy="-16" r="3.5" fill="#fff"/><circle cx="54" cy="-16" r="3.5" fill="#fff"/>
+    <path d="M-12 18 L0 30 L12 18Z" fill="#f472b6"/>
+    <path d="M0 30 v10 M0 40 q-14 14 -26 2 M0 40 q14 14 26 2" stroke="#e6edf3" stroke-width="6" fill="none" stroke-linecap="round"/>
+    <rect x="-9" y="44" width="18" height="16" rx="3" fill="#e6edf3"/>
+    <circle cx="-74" cy="26" r="13" fill="#f472b6" opacity=".35"/><circle cx="74" cy="26" r="13" fill="#f472b6" opacity=".35"/>
+    <!-- whiskers -->
+    <g stroke="#8b95a5" stroke-width="3" stroke-linecap="round"><path d="M-30 30 l-46 -6 M-30 38 l-44 8 M30 30 l46 -6 M30 38 l44 8"/></g>
+  </g>
+  <!-- price tag it is not paying -->
+  <g transform="translate(640 150) rotate(14)">
+    <path d="M-60 -26 h96 l26 26 l-26 26 h-96z" fill="#151b25" stroke="#34d399" stroke-width="5" stroke-linejoin="round"/>
+    <circle cx="36" cy="0" r="6" fill="#34d399"/>
+    <text x="-14" y="12" text-anchor="middle" font-family="Menlo, monospace" font-weight="700" font-size="32" fill="#34d399">$0</text>
+  </g>
+  <text x="400" y="540" text-anchor="middle" font-family="Helvetica Neue, Arial" font-weight="700" font-size="30" fill="#8b95a5" letter-spacing="1">FREE GPUS. ZERO SHAME.</text>
+</svg>

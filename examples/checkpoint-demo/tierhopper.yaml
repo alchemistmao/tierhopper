@@ -1,0 +1,14 @@
+# Checkpoint/resume demo: needs ~3.5 min of work but each attempt may only run 3 min,
+# so the runner stops it early, saves a checkpoint, and the next attempt resumes.
+name: checkpoint-demo
+project: examples
+entrypoint: python count.py
+gpu:
+  min_vram_gb: 12
+estimate_hours: 0.1
+timeout_minutes: 3
+checkpoint:
+  dir: checkpoints/
+  every_minutes: 1
+progress_file: .progress
+outputs: [results/]

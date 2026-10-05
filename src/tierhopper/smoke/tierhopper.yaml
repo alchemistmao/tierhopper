@@ -1,0 +1,10 @@
+# Built-in GPU smoke test run by `tierhopper connect <provider>`.
+name: smoke
+project: tierhopper-smoke
+entrypoint: python main.py
+requirements: requirements.txt
+gpu:
+  min_vram_gb: 12
+estimate_hours: 0.02
+timeout_minutes: 20
+outputs: [results/]
