@@ -42,7 +42,7 @@ Homepage = "https://github.com/alchemistmao/tierhopper"
 Issues = "https://github.com/alchemistmao/tierhopper/issues"
 
 [project.scripts]
-tierhopper = "tierhopper.cli:app"
+tierhopper = "tierhopper.cli:main"
 
 [dependency-groups]
 dev = [
@@ -57,6 +57,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tierhopper"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"examples/hello-gpu" = "tierhopper/examples/hello-gpu"
 
 [tool.ruff]
 line-length = 120

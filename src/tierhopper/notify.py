@@ -86,7 +86,7 @@ def integration_card(p: Provider) -> str:
         manual.append("add a card (no charge unless you approve)" if p.kind != "paid" else "add a card")
     steps.append("Accept the terms" + (f" and {' and '.join(manual)}" if manual else "") + " yourself")
     if p.login_command:
-        steps.append(f"On your Mac, the connect command opens `{p.login_command}` in the browser")
+        steps.append(f"On your computer, the connect command opens `{p.login_command}` in the browser")
     elif p.api_key_url:
         steps.append(f"Create an API key: {p.api_key_url}")
     steps.append(f"Run: tierhopper connect {p.id}")

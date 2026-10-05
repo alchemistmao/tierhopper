@@ -11,51 +11,73 @@ Your laptop does none of the heavy work.
 
 ## What you need
 
-- macOS or Linux with [uv](https://docs.astral.sh/uv/getting-started/installation/) and Claude Code
-- One free [Kaggle](https://www.kaggle.com) account (no card; about 30 GPU-hours every week)
+- A Mac or Linux computer with [Claude Code](https://claude.com/claude-code)
+- A free [Kaggle](https://www.kaggle.com) account with a verified phone number
+  (no card; about 30 GPU-hours every week)
 
 ## Install (about 5 minutes)
 
+Open the Terminal app and run these three commands, one at a time.
+
+1. Install [uv](https://docs.astral.sh/uv/), the tool that installs TierHopper (skip if you have it):
+
 ```bash
-uv tool install git+https://github.com/alchemistmao/tierhopper
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+
+Close the Terminal window and open a new one, so it finds `uv`.
+
+2. Install TierHopper:
+
+```bash
+uv tool install https://github.com/alchemistmao/tierhopper/archive/refs/heads/main.zip
+```
+
+3. Set it up:
 
 ```bash
 tierhopper setup
 ```
 
-`setup` asks for your Kaggle API token (it tells you where to get it), stores it in your system
-keychain and runs a real 1-minute GPU test, so you know it works before you depend on it.
+`setup` walks you through it:
+
+- it opens the Kaggle page where you create an API token, and you paste the token (it goes to your
+  system keychain, nowhere else);
+- it runs a real 2-minute GPU test in your Kaggle account, so you know it works;
+- it adds TierHopper to Claude Code.
+
+When it says **All set**, open a **new** Claude Code session and ask:
+
+> Run a TierHopper test job
+
+Claude creates a small example, sends it to a free GPU and tells you which GPU ran it.
+
+`tierhopper doctor` checks the installation at any time.
+
+**If the terminal says `tierhopper: command not found`**, run `uv tool update-shell` and open a new
+Terminal window.
+
+## Using it
+
+In Claude Code, point Claude at a folder with your code and say "run this on TierHopper". Claude writes
+the job file, shows you the plan, follows the job and brings the results back. Useful things to ask:
+
+- "How is the job going?"
+- "Why did it fail?"
+- "How much free GPU do I have left?"
+
+The same from the terminal:
 
 ```bash
-tierhopper install
-```
-
-`install` adds TierHopper to Claude Code (the MCP server and a short skill). Open a **new** Claude Code
-session and ask:
-
-> what can TierHopper do?
-
-Check the installation at any time with `tierhopper doctor`.
-
-## Your first job
-
-```bash
-git clone https://github.com/alchemistmao/tierhopper && cd tierhopper/examples/hello-gpu
+tierhopper init my-first-job
 ```
 
 ```bash
-tierhopper submit . && tierhopper watch
+tierhopper submit my-first-job --watch
 ```
 
-```bash
-tierhopper jobs
-```
-
-`tierhopper fetch <job_id>` downloads the results (`results/result.json` names the GPU that ran it).
-
-In Claude Code you do not type any of this. Point Claude at a folder with your code and say
-"run this on TierHopper"; it writes the job file for you.
+Jobs keep running in the cloud if you close the laptop. Their results arrive the next time you (or
+Claude) check on them.
 
 ## The job file
 
@@ -97,7 +119,8 @@ on the next provider: fine for jobs of a few hours.
 
 **Full mode** adds a scheduler that works while your computer is off, checkpoints that survive a hop,
 a web dashboard and phone notifications. It needs your own Supabase project, a Cloudflare R2 bucket and
-Modal. Install with `uv tool install "tierhopper[full] @ git+https://github.com/alchemistmao/tierhopper"`
+Modal. Install with
+`uv tool install "tierhopper[full] @ https://github.com/alchemistmao/tierhopper/archive/refs/heads/main.zip"`
 and see [SPEC.md](SPEC.md).
 
 ## Rules it follows
@@ -112,10 +135,10 @@ and see [SPEC.md](SPEC.md).
 
 | | |
 |---|---|
-| `tierhopper setup` | connect the first provider and test a GPU |
-| `tierhopper install` | add TierHopper to Claude Code |
+| `tierhopper setup` | connect the first provider, test a GPU, add TierHopper to Claude Code |
+| `tierhopper init <folder>` | create a small example job |
 | `tierhopper doctor` | check that everything is in place |
-| `tierhopper submit <folder>` | run a job |
+| `tierhopper submit <folder> --watch` | run a job and follow it |
 | `tierhopper jobs` / `status` / `logs` / `watch` | follow jobs |
 | `tierhopper fetch <job_id>` | download results |
 | `tierhopper pause` / `resume` / `cancel` | control a job |
@@ -128,6 +151,16 @@ monthly free credit, and TierHopper stops before that.
 
 **Where is my code sent?** Only to the provider that runs the job, in your own account.
 `.env*`, `kaggle.json` and `.git` are left out of the package automatically.
+
+**What shows up in my Kaggle account?** Each run is a private notebook named `th-…`. You can delete
+them whenever you like.
+
+**How big can a job be?** The folder holds code only: on Kaggle it must stay under 900 KB packed. Let the
+script download datasets and models when it runs.
+
+**Does it work on Windows?** It has not been tested there yet. Use WSL for now.
+
+**How do I update it?** Run the install command again with `--force`, then `tierhopper install`.
 
 **A job failed. Why?** `tierhopper logs <job_id>`, or ask Claude "why did the job fail?".
 

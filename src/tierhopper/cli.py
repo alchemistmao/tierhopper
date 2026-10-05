@@ -13,9 +13,9 @@ import typer
 from tierhopper import credentials
 from tierhopper.spec import SpecError, load_spec
 
-app = typer.Typer(no_args_is_help=True, add_completion=False,
+app = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_enable=False,
                   help="Run GPU jobs on free cloud GPU tiers, from Claude Code or the terminal.\n\n"
-                       "New here? Run `tierhopper setup`, then `tierhopper install`.")
+                       "New here? Run: tierhopper setup")
 spec_app = typer.Typer(no_args_is_help=True, help="Job spec utilities.")
 config_app = typer.Typer(no_args_is_help=True, help="Configure TierHopper services.")
 control_app = typer.Typer(no_args_is_help=True, help="Cloud control plane (scheduler + heartbeats) on Modal.")
@@ -32,6 +32,19 @@ CONTROL_SECRETS = [("supabase", "url"), ("supabase", "secret_key"), ("dashboard"
                    ("control", "ingest_secret"), ("control", "ingest_url"), ("control", "action_secret"),
                    ("control", "action_url"), ("control", "dashboard_secret"), ("control", "vapid_private"),
                    ("control", "vapid_public")]
+
+REPO_URL = "https://github.com/alchemistmao/tierhopper"
+JSON = typer.Option(False, "--json", help="Print the raw data instead of a summary.")
+
+
+@app.callback(invoke_without_command=True)
+def _root(version: bool = typer.Option(False, "--version", help="Show the version and exit.", is_eager=True)) -> None:
+    if version:
+        from tierhopper import __version__
+
+        typer.echo(f"tierhopper {__version__}")
+        raise typer.Exit
+
 
 NEEDS_STORAGE = {"lightning", "runpod"}  # these download the job package by URL, so they need R2
 
@@ -60,7 +73,7 @@ def _need(module: str, feature: str) -> None:
 
     if importlib.util.find_spec(module) is None:
         _fail(f"{feature} is a full-mode feature. Install the extras first:\n"
-              "  uv tool install --force \"tierhopper[full] @ git+https://github.com/alchemistmao/tierhopper\"")
+              f"  uv tool install --force \"tierhopper[full] @ {REPO_URL}/archive/refs/heads/main.zip\"")
 
 
 def _print(data) -> None:
@@ -233,24 +246,31 @@ def _connect(th, provider_id: str) -> None:
             _fail("cancelled; RunPod stays pending")
     elif provider_id == "kaggle":
         if not credentials.has_secret("kaggle", "api_token"):
-            typer.echo("1. Sign in to Kaggle and verify your phone at https://www.kaggle.com/settings "
-                       "(needed for GPU).")
-            typer.echo(f"2. Create an API token at {provider.api_key_url} (\"Generate New Token\") and copy it.")
-            webbrowser.open(provider.api_key_url or "")
-            credentials.set_secret("kaggle", "api_token", typer.prompt("3. Paste the token here (hidden)",
-                                                                       hide_input=True).strip())
+            typer.echo("1. Sign in to Kaggle and verify your phone number at https://www.kaggle.com/settings")
+            typer.echo("   (Kaggle only gives GPUs to phone-verified accounts).")
+            typer.echo(f"2. On {provider.api_key_url}, under “API Tokens”, click “Generate New Token” and copy it.")
+            typer.echo("3. Paste it below and press Enter. Nothing shows while you paste: that is normal.")
+            _open(provider.api_key_url)
+            credentials.set_secret("kaggle", "api_token", _ask_kaggle_token())
 
     check = th.adapter(provider).validate_credentials()
     if not check.ok:
+        if provider_id == "kaggle" and "phone" in check.detail:  # the token is fine; the account is not ready
+            _fail("Your Kaggle token works, but the account has no GPU yet. Verify your phone number at "
+                  "https://www.kaggle.com/settings and run this command again.")
         if provider_id in ("kaggle", "runpod"):  # forget a key that does not work, so the next try asks again
             credentials.delete_secret(provider_id, "api_token" if provider_id == "kaggle" else "api_key")
+            reason = next((ln.strip() for ln in check.detail.splitlines() if ln.strip()), "")[:160]
+            _fail(f"{provider.name} did not accept that key ({reason}).\n"
+                  "  Nothing was saved. Run this command again and paste a fresh token.")
         _fail(check.detail)
     _ok(check.detail)
 
-    typer.echo("Running the GPU smoke test (first run builds the image, can take a few minutes)…")
+    wait = "about 2 minutes" if provider_id == "kaggle" else "the first run can take a few minutes"
+    typer.echo(f"Running a real GPU test on {provider.name} ({wait})…")
     ok, detail = th.smoke_test(provider_id, on_update=lambda m: typer.echo(f"  · {m}"))
     if not ok:
-        _fail(f"smoke test failed: {detail}")
+        _fail(f"the GPU test failed: {detail}\nYour key is saved; run this command again to retry.")
     provider.status = ProviderStatus.ACTIVE
     th.store.upsert_provider(provider)
     th.refresh_credit(provider)
@@ -260,11 +280,9 @@ def _connect(th, provider_id: str) -> None:
 @app.command()
 def setup(provider_id: str = typer.Option("kaggle", "--provider", help="First provider to connect.")) -> None:
     """First-time setup: connect one free GPU provider and run a real GPU test. Takes about 5 minutes."""
-    from tierhopper import config
     from tierhopper.models import ProviderStatus
 
     typer.secho("TierHopper setup", bold=True)
-    typer.echo(f"Mode: {config.mode()} · state in {config.home()}")
     th = _service()
     active = [p for p in th.store.list_providers() if p.status == ProviderStatus.ACTIVE]
     if active:
@@ -279,13 +297,34 @@ def setup(provider_id: str = typer.Option("kaggle", "--provider", help="First pr
         typer.echo("")
         _connect(th, provider_id)
     typer.echo("")
-    if _claude_registered():
-        _ok("Claude Code already knows TierHopper")
-    else:
-        typer.echo("Last step — add TierHopper to Claude Code:")
-        typer.secho("  tierhopper install", bold=True)
-    typer.echo("")
-    typer.echo("Then, in a NEW Claude Code session, ask: “run this on TierHopper”.")
+    typer.echo("Adding TierHopper to Claude Code…")
+    if _install():
+        typer.echo("")
+        typer.secho("All set.", bold=True)
+        typer.echo("Open a NEW Claude Code session and ask: “Run a TierHopper test job”.")
+
+
+def _open(url: str | None) -> None:
+    import os
+
+    if url and not os.environ.get("TIERHOPPER_NO_BROWSER"):
+        webbrowser.open(url)
+
+
+def _ask_kaggle_token() -> str:
+    for _ in range(3):
+        token = typer.prompt("   Kaggle API token", hide_input=True, default="", show_default=False)
+        token = token.strip().strip("'\"")
+        if token.startswith("{"):
+            typer.secho("   That is the old kaggle.json format. Use “Generate New Token” under “API Tokens” "
+                        "and paste the token itself (it starts with KGAT_).", fg=typer.colors.YELLOW)
+        elif len(token) < 20:
+            typer.secho("   Nothing was pasted (or it was cut short). Copy the token and paste it again.",
+                        fg=typer.colors.YELLOW)
+        else:
+            return token
+    _fail("no token received. Run `tierhopper setup` again when you have it.")
+    raise AssertionError
 
 
 def _executable() -> str:
@@ -294,40 +333,104 @@ def _executable() -> str:
     return shutil.which("tierhopper") or str(Path(sys.argv[0]).resolve())
 
 
-def _claude_registered() -> bool:
+def _claude() -> str | None:
     import shutil
 
-    if not shutil.which("claude"):
+    return shutil.which("claude")
+
+
+def _claude_config() -> Path:
+    return Path.home() / ".claude.json"
+
+
+def _claude_registered() -> bool:
+    try:  # the settings file is the source of truth and reading it is instant
+        if "tierhopper" in (json.loads(_claude_config().read_text()).get("mcpServers") or {}):
+            return True
+    except (OSError, ValueError):
+        pass
+    claude = _claude()  # registered some other way (e.g. for one project only)
+    return bool(claude) and subprocess.run([claude, "mcp", "get", "tierhopper"], capture_output=True,
+                                           check=False).returncode == 0
+
+
+def _register_in_file(exe: str) -> bool:
+    """Claude Code without the `claude` command on PATH (desktop app): add the server to its settings file."""
+    path = _claude_config()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
         return False
-    out = subprocess.run(["claude", "mcp", "get", "tierhopper"], capture_output=True, text=True, check=False)
-    return out.returncode == 0
+    backup = path.with_name(".claude.json.before-tierhopper")
+    backup.write_text(path.read_text())
+    backup.chmod(0o600)
+    data.setdefault("mcpServers", {})["tierhopper"] = {"type": "stdio", "command": exe, "args": ["mcp"],
+                                                       "env": _server_env()}
+    tmp = path.with_name(".claude.json.tierhopper-tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.chmod(0o600)
+    tmp.replace(path)
+    return True
 
 
-@app.command()
-def install() -> None:
-    """Add TierHopper to Claude Code: registers the MCP server and installs the skill."""
+def _server_env() -> dict[str, str]:
+    """A custom state folder or key store must reach the server Claude Code starts, or it would look elsewhere."""
+    import os
+
+    return {k: os.environ[k] for k in ("TIERHOPPER_HOME", "PYTHON_KEYRING_BACKEND") if os.environ.get(k)}
+
+
+def _install() -> bool:
     import shutil
 
     skill_src = Path(__file__).resolve().parent / "skill" / "SKILL.md"
     skill_dst = Path.home() / ".claude" / "skills" / "tierhopper" / "SKILL.md"
     skill_dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(skill_src, skill_dst)
-    _ok(f"skill installed at {skill_dst}")
+    _ok("skill installed (tells Claude when and how to use TierHopper)")
 
-    exe = _executable()
-    if not shutil.which("claude"):
-        typer.secho("Claude Code CLI (`claude`) was not found on PATH.", fg=typer.colors.YELLOW)
-        typer.echo("Install Claude Code, then run this again — or add the server by hand:")
-        typer.echo(f"  claude mcp add tierhopper --scope user -- {exe} mcp")
-        raise typer.Exit(1)
-    if _claude_registered():
-        subprocess.run(["claude", "mcp", "remove", "tierhopper", "--scope", "user"], capture_output=True, check=False)
-    out = subprocess.run(["claude", "mcp", "add", "tierhopper", "--scope", "user", "--", exe, "mcp"],
-                         capture_output=True, text=True, check=False)
-    if out.returncode != 0:
-        _fail("could not register the MCP server: " + (out.stderr.strip() or out.stdout.strip())[:300])
+    exe, claude = _executable(), _claude()
+    if claude:
+        subprocess.run([claude, "mcp", "remove", "tierhopper", "--scope", "user"], capture_output=True, check=False)
+        env = [arg for k, v in _server_env().items() for arg in ("-e", f"{k}={v}")]
+        out = subprocess.run([claude, "mcp", "add", "tierhopper", "--scope", "user", *env, "--", exe, "mcp"],
+                             capture_output=True, text=True, check=False)
+        if out.returncode != 0:
+            typer.secho("✗ could not register the MCP server: " + (out.stderr.strip() or out.stdout.strip())[:300],
+                        fg=typer.colors.RED)
+            return False
+    elif not _register_in_file(exe):
+        typer.secho("Claude Code was not found on this computer.", fg=typer.colors.YELLOW)
+        typer.echo("Install it from https://claude.com/claude-code , open it once, then run: tierhopper install")
+        return False
     _ok("MCP server registered in Claude Code (all your projects)")
+    return True
+
+
+@app.command()
+def install() -> None:
+    """Add TierHopper to Claude Code (setup already does this; run it again after reinstalling)."""
+    if not _install():
+        raise typer.Exit(1)
     typer.echo("Open a NEW Claude Code session and ask: “what can TierHopper do?”")
+
+
+@app.command()
+def init(folder: str = typer.Argument("hello-gpu", help="Folder to create.")) -> None:
+    """Create a small example job (finds the GPU and benchmarks it) to try or to start from."""
+    import shutil
+
+    here = Path(__file__).resolve()
+    src = next((p for p in (here.parent / "examples" / "hello-gpu", here.parents[2] / "examples" / "hello-gpu")
+                if p.is_dir()), None)
+    dest = Path(folder).expanduser()
+    if src is None:
+        _fail("the example is missing from this installation; reinstall TierHopper")
+    if dest.exists():
+        _fail(f"{dest} already exists; pick another name: tierhopper init my-job")
+    shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__", "results"))
+    _ok(f"created {dest}/ (main.py, requirements.txt, tierhopper.yaml)")
+    typer.echo(f"Run it:  tierhopper submit {dest} --watch")
 
 
 @app.command()
@@ -336,7 +439,9 @@ def doctor() -> None:
     from tierhopper import __version__, config
     from tierhopper.models import ProviderStatus
 
-    typer.echo(f"TierHopper {__version__} · mode: {config.mode()} · state: {config.home()}")
+    typer.echo(f"TierHopper {__version__} · {config.mode()} mode")
+    typer.echo(f"  · files            {config.home()}")
+    typer.echo(f"  · keys             {credentials.backend()}")
     try:
         th = _service()
     except Exception as e:  # noqa: BLE001
@@ -347,16 +452,20 @@ def doctor() -> None:
         mark = "✓" if p.status == ProviderStatus.ACTIVE else "·"
         snap = th.store.latest_credit(p.id) if p.status == ProviderStatus.ACTIVE else None
         left = f" · {snap.remaining:.1f} {'GPU-hours' if snap.unit == 'gpu_hours' else 'USD'} left" if snap else ""
-        typer.echo(f"  {mark} {p.name:<14} {p.status.value}{left}")
-    storage = "on" if th.blobs else "off — long jobs restart from zero on a hop"
-    typer.echo(f"  {'✓' if th.blobs else '·'} checkpoints (R2)  {storage}")
+        state = "connected" if p.status == ProviderStatus.ACTIVE else f"not connected (tierhopper connect {p.id})"
+        typer.echo(f"  {mark} {p.name:<16} {state}{left}")
+    storage = "on" if th.blobs else "off (full mode only; a job that changes provider starts over)"
+    typer.echo(f"  {'✓' if th.blobs else '·'} checkpoints      {storage}")
     registered = _claude_registered()
-    claude = "registered" if registered else "not registered — run `tierhopper install`"
+    claude = "connected" if registered else "not connected (tierhopper install)"
     typer.echo(f"  {'✓' if registered else '·'} Claude Code      {claude}")
     if not active:
         typer.secho("No provider connected yet. Run: tierhopper setup", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
-    _ok("ready" if registered else "providers ready")
+    if not registered:
+        typer.secho("Claude Code does not know TierHopper yet. Run: tierhopper install", fg=typer.colors.YELLOW)
+        raise typer.Exit(1)
+    _ok("ready")
 
 
 @app.command()
@@ -369,15 +478,46 @@ def watch(job_id: str = typer.Argument(None, help="Follow only this job (default
 
     th = _service()
     live = (JobStatus.RUNNING, JobStatus.QUEUED)
+    seen: dict[str, str] = {}
+    typer.echo("Following jobs (Ctrl+C stops watching; the jobs keep running in the cloud)…")
     while True:
         th.tick()
-        jobs = [j for j in th.store.list_jobs(limit=50) if j.status in live and job_id in (None, j.id)]
-        if not jobs:
-            _ok(f"{th.store.get_job(job_id).status.value} · tierhopper fetch {job_id}" if job_id else "nothing running")
-            return
+        jobs = [j for j in th.store.list_jobs(limit=50)
+                if job_id in (None, j.id) and (j.status in live or j.id in seen)]
         for j in jobs:
-            typer.echo(f"{time.strftime('%H:%M')}  {j.name:<32} {j.status.value:<8} {j.progress * 100:5.1f}%")
+            if j.status in live:
+                where = ", ".join(sorted({a.provider_id for s in th.store.list_shards(j.id)
+                                          for a in th.store.list_attempts(s.id) if not a.status.terminal})) or "queue"
+                typer.echo(f"  {time.strftime('%H:%M')}  {j.name:<28} {j.status.value:<8} "
+                           f"{j.progress * 100:4.0f}%  {where}")
+            elif seen.get(j.id) in {s.value for s in live}:
+                _job_end(th, j)
+            seen[j.id] = j.status.value
+        if not any(j.status in live for j in jobs):
+            if not seen:
+                _ok("nothing is running" if not job_id else f"job is {th.store.get_job(job_id).status.value}")
+            return
         time.sleep(max(15, interval))
+
+
+def _job_end(th, job) -> None:
+    if job.status.value == "done":
+        _ok(f"{job.name} finished")
+        _show_results(th.fetch_results(job.id))
+    else:
+        typer.secho(f"✗ {job.name}: {job.status.value} · see why: tierhopper logs {job.id}", fg=typer.colors.RED)
+
+
+def _show_results(got: dict) -> None:
+    files = [f for item in got["items"] for f in item["files"] if "/_provider/" not in f.replace("\\", "/")]
+    if not files:
+        typer.echo(f"  no result files yet (job is {got['status']})")
+        return
+    typer.echo(f"  results in {got['dest']}")
+    for f in files[:12]:
+        typer.echo(f"    {Path(f).relative_to(got['dest']) if Path(f).is_relative_to(got['dest']) else f}")
+    if len(files) > 12:
+        typer.echo(f"    … and {len(files) - 12} more")
 
 
 @control_app.command("deploy")
@@ -467,22 +607,59 @@ def control_tick() -> None:
 
 @app.command()
 def fetch(job_id: str, dest: str = typer.Option(None, help="Destination folder"),
-          partial: bool = typer.Option(False, "--partial", help="Include the last checkpoint if not done")) -> None:
+          partial: bool = typer.Option(False, "--partial", help="Include the last checkpoint if not done"),
+          as_json: bool = JSON) -> None:
     """Download a job's results."""
-    _print(_service().fetch_results(job_id, dest_dir=dest, partial=partial))
+    got = _service().fetch_results(job_id, dest_dir=dest, partial=partial)
+    _print(got) if as_json else _show_results(got)
 
 
 @app.command()
 def submit(path: str = typer.Argument(".", help="tierhopper.yaml or its directory"),
-           dry_run: bool = typer.Option(False, "--dry-run", help="Only show the plan.")) -> None:
-    """Submit a job."""
-    _print(_service().submit_job(path, dry_run=dry_run))
+           dry_run: bool = typer.Option(False, "--dry-run", help="Only show the plan."),
+           follow: bool = typer.Option(False, "--watch", help="Follow the job until it finishes."),
+           as_json: bool = JSON) -> None:
+    """Submit a job: a folder with your code and a tierhopper.yaml."""
+    out = _service().submit_job(path, dry_run=dry_run)
+    if as_json:
+        return _print(out)
+    est = out["estimate"]
+    size = f" · about {est['gpu_hours'] * 60:.0f} min of GPU" if est.get("gpu_hours") else ""
+    first = out["plan"][0] if out["plan"] else None
+    if dry_run:
+        typer.echo(f"Plan: {first['provider']} ({first['gpu']}){size}" if first
+                   else f"Plan: nothing can run this now. {out.get('next_step', '')}")
+        for provider, why in out["not_used"].items():
+            typer.echo(f"  not {provider}: {why}")
+        return None
+    if out.get("needs_approval"):
+        typer.secho(f"Needs your OK first: {out['needs_approval']}", fg=typer.colors.YELLOW)
+        typer.echo(f"  {out['approve_command']}")
+        return None
+    where = ", ".join(out["providers"]) or "the queue (no free GPU right now)"
+    _ok(f"submitted to {where}{size}")
+    typer.echo(f"  job id: {out['job_id']}")
+    if follow:
+        return watch(job_id=out["job_id"], interval=30)
+    typer.echo("  follow it: tierhopper watch")
+    return None
 
 
 @app.command()
-def status(job_id: str) -> None:
+def status(job_id: str, as_json: bool = JSON) -> None:
     """Show a job's status (and refresh it from the provider)."""
-    _print(_service().job_status(job_id))
+    out = _service().job_status(job_id)
+    if as_json:
+        return _print(out)
+    typer.secho(f"{out['name']} · {out['status']} · {out['progress'] * 100:.0f}%", bold=True)
+    for s in out["stops"]:
+        end = f" ({s['end_reason']})" if s["end_reason"] else ""
+        typer.echo(f"  {s['provider']:<10} {s['gpu'] or '':<6} {s['status']}{end} · {s['gpu_minutes']} GPU-min")
+    if out["status"] == "done":
+        typer.echo(f"  get the results: tierhopper fetch {out['job_id']}")
+    elif out["status"] == "failed":
+        typer.echo(f"  see why: tierhopper logs {out['job_id']}")
+    return None
 
 
 @app.command()
@@ -532,9 +709,20 @@ def logs(job_id: str, lines: int = typer.Option(80, help="Lines per attempt (max
 
 
 @app.command()
-def credits() -> None:
+def credits(as_json: bool = JSON) -> None:
     """Show free credit left per provider."""
-    _print(_service().credits_status())
+    rows = _service().credits_status()
+    if as_json:
+        return _print(rows)
+    for r in rows:
+        if "remaining" in r:
+            unit = "GPU-hours" if r["unit"] == "gpu_hours" else "USD"
+            resets = f" · renews {r['resets_at'][:10]}" if r.get("resets_at") else ""
+            left = f"{r['remaining']:g} {unit} left{resets}"
+        else:
+            left = f"not connected ({r.get('how_to_connect', '')})" if r["status"] != "active" else "connected"
+        typer.echo(f"  {r['name']:<14} {left}")
+    return None
 
 
 @app.command()
@@ -547,7 +735,7 @@ def mcp() -> None:
 
 # ---- help layout: everyday commands first, advanced ones grouped apart ---------------------------
 HELP_PANELS = [
-    ("Get started", ["setup", "install", "doctor"]),
+    ("Get started", ["setup", "init", "doctor", "install"]),
     ("Jobs", ["submit", "jobs", "status", "logs", "fetch", "watch", "pause", "resume", "cancel", "approve", "deny"]),
     ("Providers and credit", ["connect", "credits", "report"]),
     ("Full mode (advanced)", ["card", "discover", "dashboard-env", "mcp"]),
@@ -569,5 +757,33 @@ def _arrange_help() -> None:
 
 _arrange_help()
 
+
+
+def main() -> None:
+    """Entry point: one clear line per error; TIERHOPPER_DEBUG=1 shows the full traceback."""
+    import os
+
+    from tierhopper.store import NotFound
+
+    try:
+        app()
+    except KeyboardInterrupt:
+        typer.echo("")
+        raise SystemExit(130) from None
+    except Exception as e:  # noqa: BLE001
+        if os.environ.get("TIERHOPPER_DEBUG"):
+            raise
+        from tierhopper.redact import redact
+
+        if isinstance(e, NotFound):
+            text = f"no job or provider with id {e.args[0]!r}. List your jobs with: tierhopper jobs"
+        elif isinstance(e, SpecError):
+            text = f"{e}\n  A job is a folder with a tierhopper.yaml; create an example with: tierhopper init"
+        else:
+            text = str(e) if type(e).__name__ in ("SetupNeeded", "AdapterError") else f"{type(e).__name__}: {e}"
+        typer.secho(f"✗ {redact(text)[:600]}", fg=typer.colors.RED, err=True)
+        raise SystemExit(1) from None
+
+
 if __name__ == "__main__":
-    app()
+    main()

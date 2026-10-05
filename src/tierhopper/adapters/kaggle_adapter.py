@@ -9,6 +9,8 @@ which Kaggle exposes as kernel output.
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -80,10 +82,14 @@ def _api():
     token = credentials.get_secret("kaggle", "api_token")
     if token:
         os.environ["KAGGLE_API_TOKEN"] = token
-    from kaggle.api.kaggle_api_extended import KaggleApi
+    try:  # the Kaggle client prints a page of help and exits the process when the token is missing or bad
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            from kaggle.api.kaggle_api_extended import KaggleApi  # importing it already authenticates
 
-    api = KaggleApi()
-    api.authenticate()
+            api = KaggleApi()
+            api.authenticate()
+    except SystemExit:
+        raise AdapterError("the API token is missing or not valid") from None
     return api
 
 
@@ -119,7 +125,8 @@ class KaggleAdapter:
         spec = plan.spec
         package = plan.package
         if len(package) > MAX_EMBED_BYTES:
-            raise AdapterError("job package too large to embed in a Kaggle kernel (limit ~900 KB)")
+            raise AdapterError(f"job folder too big for Kaggle ({len(package) // 1024} KB packed, limit 900 KB). "
+                               "Keep only code in it and let the script download data and models.")
         accelerator = ACCELERATORS.get(plan.gpu.type)
         if accelerator is None:
             raise AdapterError(f"unsupported Kaggle GPU: {plan.gpu.type}")

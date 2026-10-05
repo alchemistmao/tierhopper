@@ -13,8 +13,13 @@ runs out. Use its MCP tools; do not run heavy jobs on the local machine.
 - Experiments that take more than a few minutes of heavy compute.
 - Not for quick CPU scripts, unit tests or anything touching local-only files that cannot be shipped.
 
+## First time / test job
+If the user wants to try TierHopper, run `tierhopper init <folder>` in the shell (it creates a tiny example
+that reports which GPU it got), then follow the flow below with that folder.
+
 ## How to package a job
-1. Put the code in one directory (keep it small; data > 20 MB belongs in a dataset/R2, not the package).
+1. Put the code in one directory and keep it small: code only (on Kaggle the packed folder must stay under
+   900 KB). The script downloads data and models itself (Hugging Face, URLs).
 2. Add `tierhopper.yaml` next to the code:
 
 ```yaml

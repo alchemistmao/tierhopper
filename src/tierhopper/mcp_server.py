@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 from functools import cache
-from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
 
+from tierhopper import __version__
 from tierhopper.redact import redact
 
-mcp = FastMCP("tierhopper")
-REPO = Path(__file__).resolve().parents[2]
+INSTRUCTIONS = """TierHopper runs GPU jobs (training, evals, batch inference) on the free tiers of cloud GPU
+providers, in the user's own accounts, so heavy work never runs on their computer.
+
+A job is a folder with code and a `tierhopper.yaml` (name, entrypoint, requirements, gpu.min_vram_gb,
+estimate_hours, timeout_minutes, outputs). Flow: submit_job(dry_run=true) to show the plan, submit_job to
+launch, job_status to follow (in local mode a job only advances when it is checked), job_logs to see
+output or errors, fetch_results to bring the output files back.
+
+If a tool answers that no provider is connected, the user has to run `tierhopper setup` in a terminal:
+it asks for their own provider key with hidden input. Never ask the user to paste a key in the chat.
+Paid providers are never used without the user's explicit approval."""
+
+mcp = FastMCP("tierhopper", instructions=INSTRUCTIONS, version=__version__)
 
 
 @cache
@@ -124,7 +135,7 @@ def usage_report(period: str = "week") -> dict[str, Any]:
 
 @mcp.tool()
 def connect_provider(provider_id: str) -> dict[str, Any]:
-    """How to connect a provider: its integration card and the command the user runs on their Mac.
+    """How to connect a provider: what it gives and the command the user runs in their own terminal.
 
     Account creation, terms, phone and card verification are always done by the user. Secrets are
     never passed through this tool; `tierhopper connect` asks for them with hidden input.
@@ -134,12 +145,13 @@ def connect_provider(provider_id: str) -> dict[str, Any]:
 
         p = _service().store.get_provider(provider_id)
         return {"provider": p.id, "status": p.status.value, "card": notify.integration_card(p),
-                "command": f"cd {REPO} && uv run tierhopper connect {p.id}"}
+                "command": f"tierhopper connect {p.id}",
+                "note": "The user runs this in a terminal; it asks for the key with hidden input."}
     return _safe(run)
 
 
 def main() -> None:
-    mcp.run()
+    mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":

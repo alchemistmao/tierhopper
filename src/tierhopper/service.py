@@ -41,6 +41,13 @@ from tierhopper.stats import ProviderStats, compute_stats, estimate_t4_hours
 from tierhopper.storage_r2 import Keys
 from tierhopper.store.base import NotFound, Store
 
+
+class SetupNeeded(RuntimeError):
+    """The installation is not ready to run jobs; the message says what the user has to do."""
+
+
+NO_PROVIDER = ("No GPU provider is connected yet. Run `tierhopper setup` in a terminal "
+               "(about 5 minutes, free), then submit again.")
 SMOKE_SPEC = Path(__file__).resolve().parent / "smoke"
 MODAL_OVERHEAD = 1.10  # CPU/memory billed on top of GPU time
 SESSION_MARGIN = timedelta(minutes=15)  # stop before a provider's session limit to save a checkpoint
@@ -208,6 +215,10 @@ class TierHopper:
         reason = self._approval_reason(estimate)
         base = {"plan": plan, "not_used": why_not, "estimate": estimate, "shards": len(items),
                 "checkpoints": self.blobs is not None}
+        if not any(p.status == ProviderStatus.ACTIVE for p in providers):
+            if dry_run:
+                return {"dry_run": True, "needs_approval": reason, **base, "next_step": NO_PROVIDER}
+            raise SetupNeeded(NO_PROVIDER)
         if dry_run:
             return {"dry_run": True, "needs_approval": reason, **base}
 

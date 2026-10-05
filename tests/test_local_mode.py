@@ -68,3 +68,48 @@ def test_logs_events_and_credit_roundtrip(tmp_path):
     assert store.list_events("j")[0].payload == {"reason": "error"}
     store.add_credit_snapshot(CreditSnapshot(provider_id="kaggle", remaining=12.5, unit="gpu_hours", source="api"))
     assert store.latest_credit("kaggle").remaining == 12.5 and store.latest_credit("modal") is None
+
+
+def test_secrets_go_to_a_private_file_without_a_keychain(tmp_path, monkeypatch):
+    import keyring
+    from keyring.backends import fail
+
+    from tierhopper import credentials
+
+    monkeypatch.setenv("TIERHOPPER_HOME", str(tmp_path))
+    monkeypatch.setattr(keyring, "get_keyring", lambda: fail.Keyring())
+    monkeypatch.setattr(keyring, "get_password", fail.Keyring().get_password)
+    credentials.set_secret("kaggle", "api_token", "KGAT_test_value_0123456789")
+    path = tmp_path / "credentials.json"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert credentials.get_secret("kaggle", "api_token") == "KGAT_test_value_0123456789"
+    credentials.delete_secret("kaggle", "api_token")
+    assert credentials.get_secret("kaggle", "api_token") is None
+
+
+def test_submit_without_a_provider_says_what_to_do(tmp_path):
+    import pytest
+
+    from tierhopper.service import SetupNeeded, TierHopper
+    from tierhopper.store.sqlite_store import SQLiteStore
+
+    th = TierHopper(SQLiteStore(tmp_path / "state.db"))
+    example = Path(__file__).resolve().parents[1] / "examples" / "hello-gpu"
+    assert "tierhopper setup" in th.submit_job(str(example), dry_run=True)["next_step"]
+    with pytest.raises(SetupNeeded, match="tierhopper setup"):
+        th.submit_job(str(example))
+    assert th.store.list_jobs() == []
+
+
+def test_init_creates_a_runnable_example(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from tierhopper.cli import app
+    from tierhopper.spec import load_spec
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, ["init", "my-job"])
+    assert result.exit_code == 0, result.output
+    spec, _ = load_spec(str(tmp_path / "my-job"))
+    assert spec.entrypoint
+    assert CliRunner().invoke(app, ["init", "my-job"]).exit_code == 1
