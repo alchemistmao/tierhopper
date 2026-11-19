@@ -66,6 +66,9 @@ def plan_route(
         if p.id in exclude:
             rejected.append(Rejection(p.id, "already tried for this job"))
             continue
+        if p.status == ProviderStatus.UNAVAILABLE:
+            rejected.append(Rejection(p.id, "not answering (failed its health check)"))
+            continue
         if p.status != ProviderStatus.ACTIVE:
             rejected.append(Rejection(p.id, f"not connected ({p.status})"))
             continue

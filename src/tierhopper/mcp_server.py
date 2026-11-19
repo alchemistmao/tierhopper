@@ -39,6 +39,10 @@ def _safe(fn, *args, **kwargs) -> dict[str, Any]:
     try:
         return fn(*args, **kwargs)
     except Exception as e:  # noqa: BLE001 - tools report errors instead of crashing the server
+        text = str(e)
+        if type(e).__name__ in ("ConnectError", "ConnectTimeout") or "<!DOCTYPE" in text:
+            return {"error": "The TierHopper database (the user's Supabase project) is not answering. It may have "
+                             "been paused for inactivity: the user can restore it at https://supabase.com/dashboard."}
         return {"error": redact(f"{type(e).__name__}: {e}")[:1000]}
 
 
@@ -122,6 +126,15 @@ def list_providers(status: str | None = None) -> dict[str, Any]:
                          "connect_command": f"tierhopper connect {p.id}"})
         return {"providers": rows}
     return _safe(run)
+
+
+@mcp.tool()
+def check_providers() -> dict[str, Any]:
+    """Check that each connected provider still accepts the user's login (no GPU is started, no cost).
+
+    A provider that fails is skipped by routing until it passes again; `fix` is the command the user runs.
+    """
+    return _safe(lambda: {"providers": _service().check_providers()})
 
 
 @mcp.tool()

@@ -41,6 +41,9 @@ outputs: [results/]     # folders/files brought back
 5. Progress: print one line per unit of work, like `page 37 of 150` (or `página 37 de 150`, `37/150 documents`,
    a tqdm bar). TierHopper reads it and shows "37 of 150 pages" with a time-left estimate from the recent pace.
 6. System tools: `git`, `curl` and `wget` are available on every provider; list anything else under `apt:`.
+   There is no CUDA compiler (`nvcc`) by default, so vLLM runs with its built-in sampler
+   (`VLLM_USE_FLASHINFER_SAMPLER=0` is set for you). Only if the job itself compiles GPU kernels at run
+   time (custom CUDA extensions, JIT kernels) add `cuda_compiler: true`; it makes the machine start slower.
 7. Secrets never go in the package; `.env*`, `kaggle.json` and `.git` are excluded automatically.
 
 ## Flow

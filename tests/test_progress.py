@@ -55,3 +55,27 @@ def test_download_bars_do_not_become_progress_when_the_job_reports_its_own(tmp_p
                          "lines": ["página 3 de 300 (detection, id 1): 40s"]}, token)
     job = store.get_job(job_id)
     assert job.progress == 0.01 and job.estimate["counters"]["0"]["unit"] == "pages"
+
+
+def test_setup_bars_are_not_the_job_progress():
+    assert parse_counter(["Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:11<00:00]"]) is None
+    assert parse_counter(["Capturing CUDA graphs (FULL): 100%|██████████| 51/51 [00:01<00:00, 38.00it/s]"]) is None
+    assert parse_counter(["Downloading model.safetensors: 100%|██| 12/12 [00:30<00:00]"]) is None
+    assert parse_counter(["Processed prompts:  10%|█  | 60/600 [00:09<01:20]"])["total"] == 600
+
+
+def test_a_running_job_never_shows_100_percent_and_follows_its_latest_bar(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "ingest_secret", lambda: "k" * 40)
+    th, store = make(tmp_path, FakeAdapter("modal", [], 1), FakeAdapter("kaggle", [], 5))
+    job_id = th.submit_job(EXAMPLE)["job_id"]
+    attempt = store.list_attempts(store.list_shards(job_id)[0].id)[0]
+    token = ingest.token_for(attempt.id, "k" * 40)
+
+    def beat(line):
+        th.handle_heartbeat({"attempt_id": attempt.id, "kind": "progress", "lines": [line]}, token)
+        return store.get_job(job_id).progress
+
+    assert beat("Warm-up: 100%|██████████| 20/20 [00:11<00:00,  2.35s/it]") == 0.99  # a first bar that fills up
+    assert beat("Processed prompts:   0%|          | 0/600 [00:00<?, ?it/s]") == 0  # the real work starts
+    assert beat("Processed prompts:  50%|█████     | 300/600 [01:00<01:00]") == 0.5
+    assert store.get_job(job_id).status == "running"

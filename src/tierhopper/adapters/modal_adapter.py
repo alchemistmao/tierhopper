@@ -63,7 +63,21 @@ def _run_job(package: bytes, command: str, runner_config: str, outputs: list[str
             "outputs": buf.getvalue()}
 
 
+def _transient(e: Exception) -> bool:
+    """Errors talking to Modal (auth, network, rate limits), as opposed to the job itself failing."""
+    import re
+
+    import modal.exception as mx
+
+    kinds = tuple(k for k in (getattr(mx, n, None) for n in ("AuthError", "ConnectionError", "TimeoutError"))
+                  if isinstance(k, type))
+    if isinstance(e, kinds + (OSError,)) or type(e).__module__.split(".")[0] in ("grpclib", "h2"):
+        return True
+    return bool(re.search(r"status = '(401|403|429|5\d\d)'|UNAVAILABLE|DEADLINE_EXCEEDED|connection", str(e), re.I))
+
+
 HF_CACHE_VOLUME = "tierhopper-hf-cache"
+CUDA_DEVEL_IMAGE = "nvidia/cuda:12.8.1-devel-ubuntu22.04"
 
 
 class ModalAdapter:
@@ -71,6 +85,16 @@ class ModalAdapter:
 
     # ---- credentials -------------------------------------------------------------------------
     def validate_credentials(self) -> ValidationResult:
+        import os
+
+        if os.environ.get("MODAL_TASK_ID"):  # inside Modal (the cloud scheduler): no token file, ask the API
+            try:
+                import modal
+
+                modal.Volume.objects.create(HF_CACHE_VOLUME, allow_existing=True)
+            except Exception as e:  # noqa: BLE001
+                return ValidationResult(False, redact(f"Modal API refused the scheduler: {e}"))
+            return ValidationResult(True, "Modal API reachable from the scheduler")
         proc = subprocess.run([sys.executable, "-m", "modal", "token", "info"], capture_output=True, text=True)
         if proc.returncode != 0:
             return ValidationResult(False, redact(proc.stderr.strip() or "no Modal token; run `modal token new`"))
@@ -94,8 +118,11 @@ class ModalAdapter:
         app_name = f"th-{plan.attempt_id[:8]}"
         # Serialized functions need the same Python minor version locally and remotely.
         local_python = f"{sys.version_info.major}.{sys.version_info.minor}"
-        image = modal.Image.debian_slim(python_version=local_python).apt_install(
-            "git", "curl", "wget", *spec.apt)
+        if spec.cuda_compiler:  # only when the job asks: the CUDA devel image is several GB larger
+            base = modal.Image.from_registry(CUDA_DEVEL_IMAGE, add_python=local_python)
+        else:
+            base = modal.Image.debian_slim(python_version=local_python)
+        image = base.apt_install("git", "curl", "wget", *spec.apt)
         requirements = plan.requirements
         if requirements:
             with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
@@ -140,6 +167,8 @@ class ModalAdapter:
         except TimeoutError:
             return AttemptState(AttemptStatus.RUNNING)
         except Exception as e:  # noqa: BLE001
+            if _transient(e):  # we could not ask Modal; the job itself may be fine: ask again next pass
+                return AttemptState(AttemptStatus.RUNNING, message=redact(f"Modal did not answer: {e}")[:300])
             self._stop_app(ref)
             return AttemptState(AttemptStatus.FAILED, message=redact(str(e))[:500])
         self._stop_app(ref)

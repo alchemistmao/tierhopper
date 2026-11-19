@@ -237,3 +237,121 @@ def test_no_provider_waits_in_line_and_tick_dispatches(tmp_path):
     kaggle.fail_submit = False
     assert th.tick()["dispatched"] == 1
     assert store.get_job(job_id).status == "running"
+
+
+class RecordingNotifier:
+    def __init__(self):
+        self.done, self.failed, self.approvals = [], [], []
+
+    def job_done(self, job):
+        self.done.append(job.id)
+
+    def job_failed(self, job, message):
+        self.failed.append(job.id)
+
+    def approval_needed(self, job, reason, paid):
+        self.approvals.append(reason)
+
+
+def test_finished_work_is_delivered_at_once_even_if_the_provider_errors_afterwards(tmp_path, monkeypatch):
+    """The November incident: results saved, then Modal answered 401; the job hopped and asked to pay."""
+    from tierhopper import ingest
+
+    monkeypatch.setattr(ingest, "ingest_secret", lambda: "s3cret-value")
+    blobs = FakeBlobs()
+    modal = FakeAdapter("modal", [AttemptStatus.FAILED], resets_in_days=9)  # the 401 after the work ended
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store = make(tmp_path, modal, kaggle, blobs=blobs)
+    th.notifier = RecordingNotifier()
+    job_id = th.submit_job(EXAMPLE)["job_id"]
+    attempt = next(iter(store.attempts.values()))
+    token = ingest.token_for(attempt.id, "s3cret-value")
+
+    blobs.put(f"results/{job_id}/0/outputs.tar.gz", _results_tar("all 480"))  # the runner uploads, then exits
+    th.handle_heartbeat({"attempt_id": attempt.id, "kind": "exit", "reason": "completed", "exit_code": 0,
+                         "seconds": 166}, token)
+
+    job = store.get_job(job_id)  # done at the heartbeat, before any scheduler pass
+    assert job.status.value == "done" and th.notifier.done == [job_id]
+    assert len(store.attempts) == 1 and not th.notifier.approvals and not th.notifier.failed
+    assert (tmp_path / "results" / job_id / "results" / "out.txt").read_text() == "all 480"
+
+
+def test_saved_results_are_never_run_again(tmp_path):
+    blobs = FakeBlobs()
+    modal = FakeAdapter("modal", [], resets_in_days=9)
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store = make(tmp_path, modal, kaggle, blobs=blobs)
+    job_id = th.submit_job(EXAMPLE)["job_id"]
+    th.pause(job_id)
+    blobs.put(f"results/{job_id}/0/outputs.tar.gz", _results_tar("ok"))
+    assert th.resume(job_id)["status"] == "done"
+    assert len(store.attempts) == 1 and modal.submitted + kaggle.submitted == 1
+
+
+def test_paid_request_says_what_really_happened():
+    from tierhopper.service import paid_reason
+
+    text = paid_reason({"Modal": "the job hit an error there", "Lightning AI": "could not start the job"},
+                       "RunPod", 0.0)
+    assert "credit ran out" not in text and "Modal: the job hit an error there" in text
+    assert text.endswith("Continue on RunPod for less than $0.01?")
+
+
+def test_morning_check_skips_a_provider_that_stopped_answering_and_brings_it_back(tmp_path):
+    class Health(RecordingNotifier):
+        def __init__(self):
+            super().__init__()
+            self.health = []
+
+        def providers_health(self, down, back):
+            self.health.append(([d["provider"] for d in down], back))
+
+    modal = FakeAdapter("modal", [], resets_in_days=9)
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store = make(tmp_path, modal, kaggle)
+    th.notifier = Health()
+    kaggle.validate_credentials = lambda: ValidationResult(False, "403 Forbidden")
+
+    rows = {r["provider"]: r for r in th.check_providers(retry_after_s=0)}
+    assert rows["modal"]["ok"] and not rows["kaggle"]["ok"]
+    assert rows["kaggle"]["fix"] == "tierhopper connect kaggle"
+    assert store.get_provider("kaggle").status == ProviderStatus.UNAVAILABLE
+    assert th.notifier.health == [(["kaggle"], [])]
+    plan = th.submit_job(EXAMPLE, dry_run=True)
+    assert all(c["provider"] != "kaggle" for c in plan["plan"])
+
+    th.check_providers(retry_after_s=0)  # still down: no second message
+    assert len(th.notifier.health) == 1
+    kaggle.validate_credentials = lambda: ValidationResult(True, "ok")
+    th.check_providers(retry_after_s=0)
+    assert store.get_provider("kaggle").status == ProviderStatus.ACTIVE
+    assert th.notifier.health[-1] == ([], ["Kaggle"])
+
+
+def test_a_provider_that_refuses_a_job_is_checked_at_once(tmp_path):
+    modal = FakeAdapter("modal", [], resets_in_days=9, fail_submit=True)
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store = make(tmp_path, modal, kaggle)
+    modal.validate_credentials = lambda: ValidationResult(False, "token revoked")
+    th.submit_job(EXAMPLE)
+    assert store.get_provider("modal").status == ProviderStatus.UNAVAILABLE
+    assert kaggle.submitted == 1
+
+
+def test_a_crash_reported_by_the_runner_ends_the_attempt_even_if_the_provider_never_answers(tmp_path, monkeypatch):
+    from tierhopper import ingest
+
+    monkeypatch.setattr(ingest, "ingest_secret", lambda: "s3cret-value")
+    modal = FakeAdapter("modal", [], resets_in_days=9)  # polls always say "running" (the scheduler's 401)
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store = make(tmp_path, modal, kaggle, blobs=FakeBlobs())
+    th.submit_job(EXAMPLE)
+    first = next(iter(store.attempts.values()))
+    th.handle_heartbeat({"attempt_id": first.id, "kind": "exit", "reason": "error", "exit_code": 1,
+                         "seconds": 30, "tail": ["ValueError: boom"]},
+                        ingest.token_for(first.id, "s3cret-value"))
+    th.tick()
+    attempts = sorted(store.attempts.values(), key=lambda a: a.started_at)
+    assert attempts[0].status.terminal and attempts[0].end_reason == EndReason.ERROR
+    assert len(attempts) == 2  # moved on to the other free GPU right away

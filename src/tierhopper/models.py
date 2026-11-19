@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def now() -> datetime:
@@ -22,6 +22,7 @@ class ProviderStatus(StrEnum):
     PENDING = "pending"
     PENDING_ADAPTER = "pending_adapter"
     ACTIVE = "active"
+    UNAVAILABLE = "unavailable"  # connected, but the last health check failed; skipped until it passes again
     DISABLED = "disabled"
 
 
@@ -119,6 +120,15 @@ class Provider(BaseModel):
     confidence: float = 1.0
     notes: str | None = None
     updated_at: datetime = Field(default_factory=now)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _unknown_status_is_skipped(cls, v):
+        # A newer TierHopper may have written a status this version does not know.
+        # Skip that provider instead of failing every command that lists providers.
+        if isinstance(v, str) and v not in ProviderStatus._value2member_map_:
+            return ProviderStatus.DISABLED
+        return v
 
 
 class CreditSnapshot(BaseModel):

@@ -96,6 +96,8 @@ outputs: [results/]      # what comes back
 
 Print a line like `page 37 of 150` as you go and TierHopper shows progress and time left.
 More options (checkpoints, shards, a temporary vLLM server, extra `apt` packages) are in [SPEC.md](SPEC.md).
+If your code compiles GPU kernels while it runs (it needs `nvcc`), add `cuda_compiler: true`: the machine
+then starts with the full CUDA toolkit, which is slower to start, so leave it off otherwise.
 
 ## Providers
 

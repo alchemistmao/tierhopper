@@ -95,6 +95,7 @@ def _api():
 
 class KaggleAdapter:
     id = "kaggle"
+    can_cancel = False  # the public API cannot stop a kernel; it ends at its own timeout
 
     def validate_credentials(self) -> ValidationResult:
         try:

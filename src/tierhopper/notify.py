@@ -69,11 +69,26 @@ class WhatsApp:
         return self.send(f"🔴 TierHopper · Stopped\n{job.name} stopped after repeated errors.\n"
                          f"Last line: {last}{extra}")
 
+    def providers_health(self, down: list[dict[str, Any]], back: list[str]) -> bool:
+        return self.send(health_text(down, back))
+
     def card(self, provider: Provider) -> bool:
         return self.send(integration_card(provider))
 
     def weekly(self, report: dict[str, Any]) -> bool:
         return self.send(weekly_text(report))
+
+
+def health_text(down: list[dict[str, Any]], back: list[str]) -> str:
+    lines = ["🩺 TierHopper · Provider check"]
+    for d in down:
+        lines.append(f"🔴 {d['name']} is not answering: {d['detail'][:160]}")
+        if d.get("fix"):
+            lines.append(f"   Fix: {d['fix']}")
+    lines += [f"🟢 {name} is working again" for name in back]
+    if down:
+        lines.append("Jobs skip it until it works again; nothing paid is used without your OK.")
+    return "\n".join(lines)
 
 
 def integration_card(p: Provider) -> str:
@@ -145,6 +160,13 @@ class Notifier:
         if self.whatsapp:
             self.whatsapp.job_done(job)
         self._push_all("Done", f"{job.name} finished. Results are ready.", f"/jobs/{job.id}")
+
+    def providers_health(self, down: list[dict[str, Any]], back: list[str]) -> None:
+        if self.whatsapp:
+            self.whatsapp.providers_health(down, back)
+        names = ", ".join([d["name"] for d in down]) or ", ".join(back)
+        title = "Provider not answering" if down else "Provider back"
+        self._push_all(title, f"{names}: see the dashboard", "/")
 
     def job_failed(self, job: Job, message: str) -> None:
         if self.whatsapp:

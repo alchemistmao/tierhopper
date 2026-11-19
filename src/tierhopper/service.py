@@ -41,6 +41,23 @@ from tierhopper.stats import ProviderStats, compute_stats, estimate_t4_hours
 from tierhopper.storage_r2 import Keys
 from tierhopper.store.base import NotFound, Store
 
+# Without a CUDA compiler (most provider images), vLLM must not pick samplers that build kernels at
+# run time (FlashInfer needs nvcc). Only read by vLLM; every other job ignores it.
+NO_COMPILER_ENV = {"VLLM_USE_FLASHINFER_SAMPLER": "0"}
+
+
+# Plain words for why a free provider dropped a job (shown when asking to pay).
+WHY = {EndReason.ERROR: "the job hit an error there", EndReason.CREDIT_EXHAUSTED: "its free credit ran out",
+       EndReason.PREEMPTED: "the machine was taken back", EndReason.SESSION_LIMIT: "its time limit was reached",
+       EndReason.CANCELLED: "it was stopped"}
+
+
+def paid_reason(failures: dict[str, str], provider: str, cost: float) -> str:
+    """Why we ask to pay, in the user's terms: what happened on each free provider, then the price."""
+    why = "; ".join(f"{name}: {text}" for name, text in failures.items()) or "no free GPU is available now"
+    price = "less than $0.01" if cost < 0.01 else f"about ${cost:.2f}"
+    return f"No free GPU could run this job ({why}). Continue on {provider} for {price}?"
+
 
 class SetupNeeded(RuntimeError):
     """The installation is not ready to run jobs; the message says what the user has to do."""
@@ -164,6 +181,53 @@ class TierHopper:
                 self.refresh_credit(p)
                 refreshed += 1
         return refreshed
+
+    def check_providers(self, only: list[str] | None = None, retry_after_s: float = 30) -> list[dict[str, Any]]:
+        """Health check (every morning, and right after a provider refuses a job): ask each connected
+        provider whether our login still works. No GPU is started, so it costs nothing. A provider that
+        fails twice is marked unavailable and skipped by routing; it comes back as soon as it passes."""
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        providers = [p for p in self.store.list_providers()
+                     if p.status in (ProviderStatus.ACTIVE, ProviderStatus.UNAVAILABLE)
+                     and p.adapter in IMPLEMENTED and (only is None or p.id in only)]
+
+        def probe(p: Provider) -> tuple[bool, str]:
+            try:
+                result = self.adapter(p).validate_credentials()
+                return result.ok, result.detail
+            except Exception as e:  # noqa: BLE001
+                return False, redact(f"{type(e).__name__}: {e}")
+
+        def check(p: Provider) -> tuple[bool, str]:
+            ok, detail = probe(p)
+            if not ok and retry_after_s:  # one more try: a blip is not an outage
+                time.sleep(retry_after_s)
+                ok, detail = probe(p)
+            return ok, detail
+
+        with ThreadPoolExecutor(max_workers=max(len(providers), 1)) as pool:
+            outcomes = list(pool.map(check, providers))
+        rows, down, back = [], [], []
+        for p, (ok, detail) in zip(providers, outcomes, strict=True):
+            was = p.status
+            new = ProviderStatus.ACTIVE if ok else ProviderStatus.UNAVAILABLE
+            if new != was:
+                self.store.upsert_provider(p.model_copy(update={"status": new, "updated_at": now()}))
+            row = {"provider": p.id, "name": p.name, "ok": ok, "detail": redact(detail)[:300],
+                   "changed": new != was}
+            if not ok:
+                row["fix"] = f"tierhopper connect {p.id}"
+                if new != was:
+                    down.append(row)
+            elif new != was:
+                back.append(p.name)
+            rows.append(row)
+        if (down or back) and self.notifier:
+            with contextlib.suppress(Exception):
+                self.notifier.providers_health(down, back)
+        return rows
 
     def credits_status(self, refresh: bool = True) -> list[dict[str, Any]]:
         rows = []
@@ -410,8 +474,16 @@ class TierHopper:
                               JobStatus.AWAITING_APPROVAL):
             job.status = current.status
             return None
-        if any(not a.status.terminal for a in self.store.list_attempts(shard.id)):
+        attempts = self.store.list_attempts(shard.id)
+        if any(not a.status.terminal for a in attempts):
             return None  # this part is already running somewhere
+        saved = self._results_saved(job, shard, strict=True) if attempts else False
+        if saved is None:
+            return None  # storage did not answer: never risk running finished work again; retry next pass
+        if saved:  # finished earlier: deliver it, do not run it again
+            last = max(attempts, key=lambda a: a.started_at)
+            self._complete_shard(job, shard, last, self.store.get_provider(last.provider_id), None)
+            return None
         spec = self._spec(job)
         providers = self.store.list_providers()
         credits = {p.id: self.store.latest_credit(p.id) for p in providers}
@@ -420,7 +492,18 @@ class TierHopper:
         candidates, _ = plan_route(spec, providers, credits, exclude=exclude, allow_paid=allow_paid,
                                    stats=self.stats(), busy=self._busy(), t4_hours=left)
         package = None
+        failures: dict[str, str] = {}
+        for a in attempts:
+            if a.end_reason and a.end_reason != EndReason.COMPLETED:
+                failures[self.store.get_provider(a.provider_id).name] = WHY.get(a.end_reason, "stopped")
         for cand in candidates:
+            paid = cand.provider.kind == ProviderKind.PAID
+            if paid:  # the monthly cap holds at every dispatch, not only when asking
+                cost, spent = self._paid_cost(job, shard, cand), self.month_spent_usd(cand.provider.id)
+                if spent + cost > cand.provider.spend_cap_usd:
+                    self._event(job, "spend_cap", provider=cand.provider.id, spent=spent,
+                                cap=cand.provider.spend_cap_usd)
+                    continue
             attempt = Attempt(shard_id=shard.id, provider_id=cand.provider.id, gpu_type=cand.gpu.type,
                               progress_start=shard.progress)
             try:
@@ -432,9 +515,14 @@ class TierHopper:
                 attempt.external_ref = self.adapter(cand.provider).submit(plan)
             except AdapterError as e:
                 exclude.add(cand.provider.id)
+                failures[cand.provider.name] = "could not start the job"
                 self._event(job, "submit_failed", provider=cand.provider.id, error=str(e)[:500])
+                with contextlib.suppress(Exception):  # a broken login should not wait for the morning check
+                    self.check_providers([cand.provider.id], retry_after_s=5)
                 continue
             self.store.create_attempt(attempt)
+            if paid:  # an approval pays for one run: any later paid run (another part, a hop) asks again
+                job.spec["_allow_paid"] = False
             shard.status = JobStatus.RUNNING
             self.store.update_shard(shard)
             job.status = JobStatus.RUNNING
@@ -443,7 +531,7 @@ class TierHopper:
             self._event(job, "attempt_started", attempt=attempt, provider=cand.provider.id, gpu=cand.gpu.type,
                         resume=shard.checkpoint_key is not None)
             return attempt
-        if not allow_paid and self._ask_for_paid(job, shard, spec, providers, credits, exclude):
+        if not allow_paid and self._ask_for_paid(job, shard, spec, providers, credits, exclude, failures):
             return None
         shard.status = JobStatus.QUEUED
         self.store.update_shard(shard)
@@ -456,7 +544,7 @@ class TierHopper:
         return None
 
     def _ask_for_paid(self, job: Job, shard: Shard, spec: JobSpec, providers: list[Provider],
-                      credits: dict, exclude: set[str]) -> bool:
+                      credits: dict, exclude: set[str], failures: dict[str, str] | None = None) -> bool:
         """No free provider can take the shard: ask to continue on a paid one (never automatic)."""
         if job.status == JobStatus.AWAITING_APPROVAL or (job.estimate.get("approval") or {}).get("denied_at"):
             return False
@@ -464,19 +552,26 @@ class TierHopper:
         paid = [c for c in paid if c.provider.kind == ProviderKind.PAID]
         if not paid:
             return False
+        # A free provider that is only busy will free up: wait for it instead of asking to pay.
+        free_later, _ = plan_route(spec, providers, credits, exclude=exclude, allow_paid=False)
+        if free_later:
+            return False
         best = paid[0]
-        t4_left = (job.estimate.get("t4_hours") or 1.0) * (1 - shard.progress)
-        hours = t4_left / speed_of(best.gpu, self.stats().get(best.provider.id))
-        cost = round(hours * best.gpu.usd_per_hour, 2)
+        cost = self._paid_cost(job, shard, best)
         spent = self.month_spent_usd(best.provider.id)
         if spent + cost > best.provider.spend_cap_usd:
             self._event(job, "spend_cap", provider=best.provider.id, spent=spent, cap=best.provider.spend_cap_usd)
             return False
         shard.status = JobStatus.QUEUED
         self.store.update_shard(shard)
-        self._request_approval(job, f"free credit ran out; continue on {best.provider.name} for about ${cost:.2f}?",
+        self._request_approval(job, paid_reason(failures or {}, best.provider.name, cost),
                                paid={"provider": best.provider.id, "gpu": best.gpu.type, "usd": cost})
         return True
+
+    def _paid_cost(self, job: Job, shard: Shard, cand: Candidate) -> float:
+        t4_left = (job.estimate.get("t4_hours") or 1.0) * (1 - shard.progress)
+        hours = t4_left / speed_of(cand.gpu, self.stats().get(cand.provider.id))
+        return round(hours * cand.gpu.usd_per_hour, 2)
 
     def _package_url(self, job: Job) -> str | None:
         if not (self.blobs and job.spec.get("_package")):
@@ -497,7 +592,8 @@ class TierHopper:
             "checkpoint_dir": spec.checkpoint.dir if spec.checkpoint else None,
             "checkpoint_every_s": (spec.checkpoint.every_minutes * 60) if spec.checkpoint else 600,
             "deadline_ts": deadline.timestamp(),
-            "env": {"TH_JOB_ID": job.id, "TH_SHARD_INDEX": str(shard.idx), "TH_SHARD_COUNT": str(shard.total)},
+            "env": {"TH_JOB_ID": job.id, "TH_SHARD_INDEX": str(shard.idx), "TH_SHARD_COUNT": str(shard.total),
+                    **({} if spec.cuda_compiler else NO_COMPILER_ENV)},
             "items": shard.items,
             "serve": spec.serve.model_dump() if spec.serve else None,
             "urls": {},
@@ -531,7 +627,7 @@ class TierHopper:
         shard = self.store.get_shard(attempt.shard_id)
         job = self.store.get_job(shard.job_id)
         kind = body.get("kind")
-        progress = body.get("progress")
+        progress, guessed = body.get("progress"), False
         counter = parse_counter([str(x) for x in (body.get("lines") or body.get("tail") or [])])
         previous = (job.estimate.get("counters") or {}).get(str(shard.idx))
         if counter and counter["unit"] == "items" and (
@@ -542,13 +638,15 @@ class TierHopper:
             counters[str(shard.idx)] = counter
             job.estimate["counters"] = counters
             if not isinstance(progress, int | float):
-                progress = counter["done"] / counter["total"]
+                # Read from the output, so a guess: only the end of the job makes it 100%.
+                progress, guessed = min(counter["done"] / counter["total"], 0.99), True
         if isinstance(progress, int | float):
             body = {**body, "progress": progress}
         self._record_telemetry(attempt.id, body)
         if isinstance(progress, int | float):
             attempt.progress_end = float(progress)
-            shard.progress = max(shard.progress, float(progress))
+            # A guessed value follows the job's latest bar (a job prints several: "5/5" loading, then "0/600").
+            shard.progress = float(progress) if guessed else max(shard.progress, float(progress))
         actual = match_gpu(str(body.get("gpu_name") or ""), body.get("vram_total_mb"),
                            self.store.get_provider(attempt.provider_id).gpu_catalog)
         if actual and actual != attempt.gpu_type and attempt.gpu_type not in ("T4x2", "L4x2"):
@@ -570,12 +668,33 @@ class TierHopper:
             tail = body.get("tail") or []
             attempt.message = redact("\n".join(str(x) for x in tail))[-2000:] or attempt.message
             self._event(job, "runner_exit", attempt=attempt, reason=reason, exit_code=body.get("exit_code"))
+        with contextlib.suppress(NotFound):
+            if self.store.get_attempt(attempt.id).status.terminal:
+                return {"ok": True, "ignored": True}  # a scheduler finished it meanwhile: do not bring it back
         self.store.update_attempt(attempt)
         self.store.update_shard(shard)
         shards = self.store.list_shards(job.id)
+        counters = job.estimate.get("counters")
+        job = self.store.get_job(job.id)  # fresh: keep any status/approval written meanwhile, change progress only
         job.progress = round(sum(s.progress for s in shards) / max(len(shards), 1), 4)
+        if counters:
+            job.estimate["counters"] = counters
         self.store.update_job(job)
+        if kind == "exit" and attempt.end_reason == EndReason.COMPLETED and self._results_saved(job, shard):
+            # Tell the user now, not at the next scheduler pass; the scheduler retries if this fails.
+            with contextlib.suppress(Exception):
+                self._poll_attempt(self.store.get_job(job.id), self.store.get_shard(shard.id), attempt)
         return {"ok": True}
+
+    def _results_saved(self, job: Job, shard: Shard, strict: bool = False) -> bool | None:
+        """The runner uploads results only when the work completed: their presence means the shard is done.
+        strict: None when storage cannot be reached (the caller must not assume either way)."""
+        if not self.blobs:
+            return False
+        try:
+            return self.blobs.exists(Keys(job.id).results(shard.idx))
+        except Exception:  # noqa: BLE001 - storage unreachable
+            return None if strict else False
 
     def _record_telemetry(self, attempt_id: str, body: dict[str, Any]) -> None:
         """Best effort: telemetry must never block job state updates, and metrics must not block logs."""
@@ -600,19 +719,54 @@ class TierHopper:
         with contextlib.suppress(Exception):  # housekeeping must never block scheduling
             self.store.prune_telemetry(now() - timedelta(days=14))
         self.refresh_stale_credits()
-        active = {a.shard_id: a for a in self.store.list_active_attempts()}
+        with contextlib.suppress(Exception):  # an unavailable provider comes back as soon as it answers
+            down = [p.id for p in self.store.list_providers() if p.status == ProviderStatus.UNAVAILABLE]
+            if down:
+                self.check_providers(down, retry_after_s=0)
+        active: dict[str, list[Attempt]] = {}
+        for a in self.store.list_active_attempts():
+            active.setdefault(a.shard_id, []).append(a)
         for job in self.store.list_jobs(limit=200):
-            if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.PAUSED):
-                continue
-            if job.status == JobStatus.AWAITING_APPROVAL:
+            if job.status in (JobStatus.DONE, JobStatus.FAILED):
                 continue
             try:
-                for shard in self.store.list_shards(job.id):
-                    attempt = active.get(shard.id)
-                    if attempt is not None:
+                shards = self.store.list_shards(job.id)
+                if job.status in (JobStatus.PAUSED, JobStatus.CANCELLED):
+                    # Something started while the job was being paused: stop it (a pod would bill forever).
+                    for shard in shards:
+                        for attempt in active.get(shard.id, []):
+                            self._stop_attempt(job, attempt)
+                    continue
+                for shard in shards:  # a part whose results are saved is finished, whatever else was going on
+                    if shard.status != JobStatus.DONE and not active.get(shard.id) \
+                            and self._results_saved(job, shard):
+                        tried = self.store.list_attempts(shard.id)
+                        if tried:
+                            last = max(tried, key=lambda a: a.started_at)
+                            self._complete_shard(job, shard, last, self.store.get_provider(last.provider_id), None)
+                            if job.status == JobStatus.AWAITING_APPROVAL:
+                                job = self.store.get_job(job.id)
+                                job.estimate["approval"] = {**(job.estimate.get("approval") or {}),
+                                                            "withdrawn": "the work had already finished"}
+                                job.status = JobStatus.DONE if all(
+                                    s.status == JobStatus.DONE for s in self.store.list_shards(job.id)) \
+                                    else JobStatus.QUEUED
+                                self.store.update_job(job)
+                            job = self.store.get_job(job.id)
+                for shard in shards:
+                    for attempt in active.get(shard.id, []):  # awaiting approval too: running parts still finish
                         self._poll_attempt(job, shard, attempt)
                         polled += 1
                         job = self.store.get_job(job.id)
+                shards = self.store.list_shards(job.id)
+                if shards and all(s.status == JobStatus.DONE for s in shards) and job.status not in (
+                        JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+                    job.status, job.finished_at, job.progress = JobStatus.DONE, now(), 1.0  # two parts ended together
+                    self.store.update_job(job)
+                    self._event(job, "done", results=job.results_prefix)
+                    if self.notifier:
+                        self.notifier.job_done(job)
+                    continue
                 if job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
                     dispatched += self._fill_parallel(job)
             except Exception as e:  # noqa: BLE001 - one broken job must not stall the others
@@ -620,6 +774,13 @@ class TierHopper:
                 with contextlib.suppress(Exception):
                     self._event(job, "tick_error", error=redact(f"{type(e).__name__}: {e}")[:300])
         return {"polled": polled, "dispatched": dispatched, "errors": errors}
+
+    def _stop_attempt(self, job: Job, attempt: Attempt) -> None:
+        with contextlib.suppress(Exception):
+            self.adapter(self.store.get_provider(attempt.provider_id)).cancel(attempt.external_ref)
+        attempt.status, attempt.end_reason, attempt.ended_at = AttemptStatus.CANCELLED, EndReason.CANCELLED, now()
+        if self.store.finish_attempt(attempt):
+            self._event(job, "attempt_stopped", attempt=attempt, reason="job is " + job.status.value)
 
     def refresh_job(self, job_id: str) -> Job:
         job = self.store.get_job(job_id)
@@ -638,10 +799,15 @@ class TierHopper:
     def _classify(state_status: AttemptStatus, message: str | None) -> EndReason:
         if state_status == AttemptStatus.SUCCEEDED:
             return EndReason.COMPLETED
-        if state_status == AttemptStatus.CANCELLED:
-            return EndReason.CANCELLED
-        if state_status == AttemptStatus.LOST:
-            return EndReason.PREEMPTED
+        if state_status in (AttemptStatus.CANCELLED, AttemptStatus.LOST):
+            return EndReason.PREEMPTED  # stopped by the provider (the user's own pause/cancel never gets here)
+        import re
+
+        said = re.findall(r"job ended: (\w+)", message or "")  # the runner's last line, also without heartbeats
+        if said and said[-1] in EndReason._value2member_map_ and said[-1] != "completed":
+            return EndReason(said[-1])
+        if said:
+            return EndReason.ERROR  # the job ran and failed: its log words are not the provider's billing
         text = (message or "").lower()
         if any(w in text for w in CREDIT_WORDS):
             return EndReason.CREDIT_EXHAUSTED
@@ -660,16 +826,46 @@ class TierHopper:
             if fresh.status.terminal:
                 attempt.status, attempt.ended_at = fresh.status, fresh.ended_at
                 return
-        state = adapter.poll(attempt.external_ref)
-        if not state.status.terminal and not getattr(adapter, "terminates_on_exit", True):
-            # Pods idle after the runner exits: stop them as soon as the runner reported its end,
-            # or when they overrun the attempt budget (never pay for an idle GPU).
-            overdue = (now() - attempt.started_at) > timedelta(minutes=self._spec(job).timeout_minutes + 30)
-            if attempt.end_reason or overdue:
-                adapter.cancel(attempt.external_ref)
+        # The runner said "completed" and its results are saved: the work is done, whatever the provider says next.
+        finished = attempt.end_reason == EndReason.COMPLETED and self._results_saved(job, shard)
+        try:
+            state = adapter.poll(attempt.external_ref)
+        except Exception as e:  # noqa: BLE001
+            if not finished:
+                raise
+            state = AttemptState(AttemptStatus.RUNNING, message=redact(str(e))[:300])
+        if finished and state.status != AttemptStatus.SUCCEEDED:
+            if not state.status.terminal:
+                with contextlib.suppress(Exception):  # release the machine; the results are already safe
+                    adapter.cancel(attempt.external_ref)
+            state = AttemptState(AttemptStatus.SUCCEEDED, gpu_seconds=state.gpu_seconds, result=state.result,
+                                 billed_usd=state.billed_usd)
+        if not state.status.terminal:
+            # Pods idle after the runner exits: stop them as soon as the runner reported its end. Any attempt
+            # that overruns its budget is stopped too (never pay for an idle GPU, never wait forever).
+            pod = not getattr(adapter, "terminates_on_exit", True)
+            can_cancel = getattr(adapter, "can_cancel", True)
+            # Kaggle cannot be stopped from outside and may queue: give it its whole session before giving up.
+            grace = timedelta(minutes=30) if can_cancel else timedelta(hours=(provider.max_session_hours or 12) + 1)
+            overdue = (now() - attempt.started_at) > timedelta(minutes=self._spec(job).timeout_minutes) + grace
+            # The runner already said how it ended (and it was not a success): believe it now, on any provider,
+            # instead of waiting for a provider that may not answer us (the cloud scheduler cannot ask Modal).
+            ended = attempt.end_reason is not None and attempt.end_reason != EndReason.COMPLETED
+            if (pod and attempt.end_reason) or ended or overdue:
+                try:
+                    adapter.cancel(attempt.external_ref)
+                except Exception as e:  # noqa: BLE001 - e.g. login expired: still end it, never stay stuck
+                    if pod and not overdue:
+                        raise  # a pod we cannot stop keeps billing: try again next pass
+                    self._event(job, "stop_failed", attempt=attempt, error=redact(str(e))[:300])
                 ok = attempt.end_reason == EndReason.COMPLETED
-                state = AttemptState(AttemptStatus.SUCCEEDED if ok else AttemptStatus.FAILED,
-                                     message="stopped after exceeding its time budget" if overdue and not ok else None)
+                if ok:
+                    state = AttemptState(AttemptStatus.SUCCEEDED)
+                elif overdue and not can_cancel:
+                    state = AttemptState(AttemptStatus.LOST, message="no answer from the provider in time")
+                else:
+                    state = AttemptState(AttemptStatus.FAILED,
+                                         message="stopped after exceeding its time budget" if overdue else None)
         if state.status == attempt.status:
             return
         if not state.status.terminal:

@@ -25,8 +25,12 @@ def sync_registry(store: Store, path: Path = DEFAULT_REGISTRY) -> list[Provider]
     for seed in load_registry(path):
         try:
             current = store.get_provider(seed.id)
-            seed = seed.model_copy(update={"status": current.status})
         except NotFound:
-            pass
+            synced.append(store.upsert_provider(seed))
+            continue
+        seed = seed.model_copy(update={"status": current.status, "updated_at": current.updated_at})
+        if seed.model_dump() == current.model_dump():
+            synced.append(current)  # nothing changed: do not rewrite the row (a status change may be landing)
+            continue
         synced.append(store.upsert_provider(seed))
     return synced

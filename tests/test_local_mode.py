@@ -113,3 +113,30 @@ def test_init_creates_a_runnable_example(tmp_path, monkeypatch):
     spec, _ = load_spec(str(tmp_path / "my-job"))
     assert spec.entrypoint
     assert CliRunner().invoke(app, ["init", "my-job"]).exit_code == 1
+
+
+class RecordingAdapter(FakeAdapter):
+    def submit(self, plan):
+        self.plans = [*getattr(self, "plans", []), plan]
+        return super().submit(plan)
+
+
+def test_vllm_sampler_needs_no_compiler_unless_the_job_asks(tmp_path):
+    import shutil
+
+    example = Path(EXAMPLE)
+    example = example if example.is_dir() else example.parent
+    with_compiler = tmp_path / "with-compiler"
+    shutil.copytree(example, with_compiler)
+    spec = with_compiler / "tierhopper.yaml"
+    spec.write_text(spec.read_text() + "\ncuda_compiler: true\n")
+
+    modal = RecordingAdapter("modal", [AttemptStatus.RUNNING], resets_in_days=1)
+    kaggle = RecordingAdapter("kaggle", [AttemptStatus.RUNNING], resets_in_days=5)
+    th, _ = make_local(tmp_path, modal, kaggle)
+    th.submit_job(EXAMPLE)
+    th.submit_job(str(with_compiler))
+    plans = [*getattr(modal, "plans", []), *getattr(kaggle, "plans", [])]
+    envs = {p.spec.cuda_compiler: p.runner_config["env"] for p in plans}
+    assert envs[False]["VLLM_USE_FLASHINFER_SAMPLER"] == "0"
+    assert "VLLM_USE_FLASHINFER_SAMPLER" not in envs[True]

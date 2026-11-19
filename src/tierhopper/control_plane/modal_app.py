@@ -5,6 +5,7 @@
     POST /ingest  runner heartbeats, authenticated by per-attempt HMAC tokens;
     GET  /action  WhatsApp action links: confirmation page only;
     POST /action  performs the confirmed action.
+- `morning_check`: every day 08:00 (São Paulo) provider health check; unavailable providers are skipped.
 - `weekly_summary`: Monday 09:00 (São Paulo) usage summary on WhatsApp.
 - `weekly_discovery`: Monday 08:00 (São Paulo) search for new free GPU tiers (Claude API + web search).
 
@@ -108,6 +109,14 @@ def web():
         return nl.plan_command(text, _service().command_snapshot())
 
     return api
+
+
+@app.function(schedule=modal.Cron("0 11 * * *"), timeout=600)  # every day 08:00 America/Sao_Paulo
+def morning_check() -> list:
+    """Every morning: is each connected provider still answering? Notifies only when one goes down or back."""
+    rows = _service().check_providers()
+    print("check:", ", ".join(f"{r['provider']}={'ok' if r['ok'] else 'DOWN'}" for r in rows))
+    return rows
 
 
 @app.function(schedule=modal.Cron("0 12 * * 1"), timeout=300)  # Monday 09:00 America/Sao_Paulo

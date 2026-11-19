@@ -27,6 +27,9 @@ COUNTER = re.compile(
     r"(?:\s+(?P<after>[^\W\d_]+))?",
     re.IGNORECASE)
 TQDM = re.compile(r"\|\s*(?P<done>\d{1,7})/(?P<total>\d{1,7})\s*\[")
+# Bars printed while a job gets ready (model weights, packages, GPU warm-up): not the job's work.
+SETUP = re.compile(r"^\W*(?:\([^)]*\)\s*)?(loading|downloading|fetching|capturing|installing|collecting|compiling)\b",
+                   re.IGNORECASE)
 
 
 def parse_counter(lines: list[str]) -> dict | None:
@@ -41,6 +44,8 @@ def parse_counter(lines: list[str]) -> dict | None:
 
 def _counters(lines: list[str]):
     for line in reversed(lines):
+        if SETUP.search(line):
+            continue
         match = TQDM.search(line) or COUNTER.search(line)
         if not match:
             continue

@@ -68,6 +68,7 @@ class JobSpec(_Strict):
     shard: ShardConfig | None = None
     serve: ServeConfig | None = None
     outputs: list[str] = Field(default_factory=list)
+    cuda_compiler: bool = False  # full CUDA toolkit (nvcc) for code that compiles GPU kernels at run time
     allow_paid: bool = False
 
     @field_validator("apt")

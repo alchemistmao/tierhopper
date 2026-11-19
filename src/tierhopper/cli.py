@@ -274,7 +274,27 @@ def _connect(th, provider_id: str) -> None:
     provider.status = ProviderStatus.ACTIVE
     th.store.upsert_provider(provider)
     th.refresh_credit(provider)
+    _push_to_cloud(provider_id)
     _ok(f"{provider.name} is active · {detail}")
+
+
+def _push_to_cloud(provider_id: str) -> None:
+    """Full mode: copy this provider's fresh login into the control plane's Modal Secret right away."""
+    if not credentials.get_secret("control", "ingest_url"):
+        return  # local mode, or the control plane was never deployed
+    values = {f"TIERHOPPER_{p}_{f}".upper(): v for p, f in CONTROL_SECRETS
+              if p == provider_id and (v := credentials.get_secret(p, f))}
+    if not values:
+        return
+    try:
+        import modal
+
+        from tierhopper.control_plane import modal_app
+
+        modal.Secret.from_name(modal_app.SECRET_NAME).update(values)
+        _ok("cloud scheduler updated with the new login")
+    except Exception as e:  # noqa: BLE001
+        typer.echo(f"  ! could not update the cloud scheduler ({type(e).__name__}); run: tierhopper control deploy")
 
 
 @app.command()
@@ -445,7 +465,10 @@ def doctor() -> None:
     try:
         th = _service()
     except Exception as e:  # noqa: BLE001
-        _fail(f"could not open the state store: {type(e).__name__}: {e}")
+        if _database_down(e):
+            _fail("the TierHopper database (your Supabase project) is not answering. If it was paused for "
+                  "inactivity, restore it at https://supabase.com/dashboard and try again in a few minutes.")
+        _fail(f"could not open the state store: {type(e).__name__}: {e}"[:600])
     providers = th.store.list_providers()
     active = [p for p in providers if p.status == ProviderStatus.ACTIVE]
     for p in providers:
@@ -709,6 +732,23 @@ def logs(job_id: str, lines: int = typer.Option(80, help="Lines per attempt (max
 
 
 @app.command()
+def check(as_json: bool = JSON) -> None:
+    """Check that every connected provider still accepts your login (no GPU is started)."""
+    rows = _service().check_providers()
+    if as_json:
+        return _print(rows)
+    if not rows:
+        typer.echo("No provider connected yet. Run: tierhopper setup")
+    for r in rows:
+        mark = "✓" if r["ok"] else "✗"
+        line = f"  {mark} {r['name']:<14} {'working' if r['ok'] else 'not answering: ' + r['detail'][:120]}"
+        typer.echo(line)
+        if not r["ok"]:
+            typer.echo(f"      fix: {r['fix']}")
+    return None
+
+
+@app.command()
 def credits(as_json: bool = JSON) -> None:
     """Show free credit left per provider."""
     rows = _service().credits_status()
@@ -737,7 +777,7 @@ def mcp() -> None:
 HELP_PANELS = [
     ("Get started", ["setup", "init", "doctor", "install"]),
     ("Jobs", ["submit", "jobs", "status", "logs", "fetch", "watch", "pause", "resume", "cancel", "approve", "deny"]),
-    ("Providers and credit", ["connect", "credits", "report"]),
+    ("Providers and credit", ["connect", "check", "credits", "report"]),
     ("Full mode (advanced)", ["card", "discover", "dashboard-env", "mcp"]),
 ]
 
@@ -757,6 +797,12 @@ def _arrange_help() -> None:
 
 _arrange_help()
 
+
+
+def _database_down(e: Exception) -> bool:
+    """Supabase unreachable: DNS gone (paused project) or the gateway's HTML error page instead of JSON."""
+    text = str(e)
+    return type(e).__name__ in ("ConnectError", "ConnectTimeout") or "<!DOCTYPE" in text or "'code': 52" in text
 
 
 def main() -> None:
@@ -779,6 +825,9 @@ def main() -> None:
             text = f"no job or provider with id {e.args[0]!r}. List your jobs with: tierhopper jobs"
         elif isinstance(e, SpecError):
             text = f"{e}\n  A job is a folder with a tierhopper.yaml; create an example with: tierhopper init"
+        elif _database_down(e):
+            text = ("the TierHopper database (your Supabase project) is not answering. If it was paused for "
+                    "inactivity, restore it at https://supabase.com/dashboard and try again in a few minutes.")
         else:
             text = str(e) if type(e).__name__ in ("SetupNeeded", "AdapterError") else f"{type(e).__name__}: {e}"
         typer.secho(f"✗ {redact(text)[:600]}", fg=typer.colors.RED, err=True)

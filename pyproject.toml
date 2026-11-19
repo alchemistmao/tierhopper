@@ -24,6 +24,7 @@ dependencies = [
     "typer>=0.12",
     "fastmcp>=4.0.10",
     "kaggle>=2.2.4",
+    "six>=1.16",  # kaggle imports it but newer releases no longer declare it
     "modal>=1.6.0",
 ]
 

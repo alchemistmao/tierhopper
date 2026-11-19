@@ -2034,6 +2034,7 @@ dependencies = [
     { name = "modal" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "six" },
     { name = "typer" },
 ]
 
@@ -2065,6 +2066,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pywebpush", marker = "extra == 'full'", specifier = ">=2.5.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "six", specifier = ">=1.16" },
     { name = "supabase", marker = "extra == 'full'", specifier = ">=2.31.0" },
     { name = "typer", specifier = ">=0.12" },
 ]

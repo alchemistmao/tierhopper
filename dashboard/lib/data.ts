@@ -222,14 +222,15 @@ export async function overview(): Promise<Overview> {
   const latest = new Map<string, Row>();
   for (const c of credits) if (!latest.has(c.provider_id)) latest.set(c.provider_id, c);
   const creditRows = [...providers.values()]
-    .filter((p) => p.status === "active")
+    .filter((p) => p.status === "active" || p.status === "unavailable")
     .map((p) => {
       const c = latest.get(p.id);
       const total = Number(p.credit_model?.amount) || 0;
       const remaining = c ? Number(c.remaining) : total;
       const hours = c?.unit === "gpu_hours";
       const resets = c?.expires_at ? new Date(c.expires_at) : null;
-      const note = p.kind === "paid" ? "Only with your OK"
+      const note = p.status === "unavailable" ? `Not answering · fix: tierhopper connect ${p.id}`
+        : p.kind === "paid" ? "Only with your OK"
         : resets ? `Resets ${resets.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}` : c?.source === "estimate" ? "Estimated" : "";
       return {
         id: p.id,
