@@ -243,8 +243,9 @@ class RecordingNotifier:
     def __init__(self):
         self.done, self.failed, self.approvals = [], [], []
 
-    def job_done(self, job):
+    def job_done(self, job, summary=None):
         self.done.append(job.id)
+        self.summaries = [*getattr(self, 'summaries', []), summary]
 
     def job_failed(self, job, message):
         self.failed.append(job.id)
@@ -355,3 +356,72 @@ def test_a_crash_reported_by_the_runner_ends_the_attempt_even_if_the_provider_ne
     attempts = sorted(store.attempts.values(), key=lambda a: a.started_at)
     assert attempts[0].status.terminal and attempts[0].end_reason == EndReason.ERROR
     assert len(attempts) == 2  # moved on to the other free GPU right away
+
+
+def test_the_done_message_says_how_long_how_much_where_and_what_it_cost(tmp_path):
+    from tierhopper.models import Job
+    from tierhopper.notify import done_text, duration
+
+    summary = {"wall_seconds": 4380, "gpu_seconds": 3300, "ran_on": ["Kaggle · T4x2", "Modal · H100"], "attempts": 2,
+               "parts": 1, "work": ["601 of 601 items"], "spent_usd": 0.0, "saved_usd": 1.84}
+    job = Job(project_id="p", name="eval-large", spec={}, spec_hash="h")
+    text = done_text(job, summary)
+    assert "601 of 601 items" in text and "1 h 13 min from send to finish (55 min on the GPU)" in text
+    assert "Kaggle · T4x2 → Modal · H100 (2 attempts)" in text and "free · about $1.84 saved" in text
+    assert f"tierhopper fetch {job.id}" in text
+    assert duration(42) == "42 s" and duration(600) == "10 min"
+    assert done_text(job, {}).splitlines()[:2] == ["🟢 TierHopper · Done", "eval-large"]  # never fails on missing data
+
+
+def _queued_on_modal(tmp_path, monkeypatch, kaggle):
+    from tierhopper import credentials, ingest
+
+    monkeypatch.setattr(ingest, "ingest_secret", lambda: "s3cret-value")
+    monkeypatch.setattr(credentials, "get_secret", lambda *a, **k: "https://ingest.example")
+    modal = FakeAdapter("modal", [], resets_in_days=9)  # accepted the job, never gives it a machine
+    modal.start_deadline = timedelta(minutes=5)
+    modal.cancelled = 0
+    modal.cancel = lambda ref: setattr(modal, "cancelled", modal.cancelled + 1)
+    th, store = make(tmp_path, modal, kaggle, blobs=FakeBlobs())
+    th.submit_job(EXAMPLE)
+    first = next(iter(store.attempts.values()))
+    assert first.provider_id == "modal"
+    return th, store, modal, first
+
+
+def test_a_job_left_in_the_modal_queue_for_five_minutes_moves_to_another_free_gpu(tmp_path, monkeypatch):
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store, modal, first = _queued_on_modal(tmp_path, monkeypatch, kaggle)
+    th.tick()
+    assert len(store.attempts) == 1 and not modal.cancelled  # two seconds in: still waiting on Modal
+    first.started_at -= timedelta(minutes=6)
+    store.update_attempt(first)
+    th.tick()
+    attempts = sorted(store.attempts.values(), key=lambda a: a.started_at)
+    assert modal.cancelled == 1 and attempts[0].status.terminal and "no GPU" in attempts[0].message
+    assert [a.provider_id for a in attempts] == ["modal", "kaggle"]
+    assert attempts[0].cost_usd == 0 and attempts[0].gpu_seconds == 0
+
+
+def test_a_job_that_already_started_on_modal_is_never_moved_for_being_slow(tmp_path, monkeypatch):
+    from tierhopper import ingest
+
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store, modal, first = _queued_on_modal(tmp_path, monkeypatch, kaggle)
+    th.handle_heartbeat({"attempt_id": first.id, "kind": "started"}, ingest.token_for(first.id, "s3cret-value"))
+    running = store.get_attempt(first.id)
+    running.started_at -= timedelta(minutes=6)
+    store.update_attempt(running)
+    th.tick()
+    assert len(store.attempts) == 1 and not modal.cancelled
+
+
+def test_with_no_other_free_gpu_the_job_keeps_its_place_in_the_modal_queue(tmp_path, monkeypatch):
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store, modal, first = _queued_on_modal(tmp_path, monkeypatch, kaggle)
+    store.upsert_provider(store.get_provider("kaggle").model_copy(update={"status": ProviderStatus.UNAVAILABLE}))
+    kaggle.validate_credentials = lambda: ValidationResult(False, "down")
+    first.started_at -= timedelta(minutes=6)
+    store.update_attempt(first)
+    th.tick()
+    assert len(store.attempts) == 1 and not modal.cancelled

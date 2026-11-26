@@ -82,6 +82,8 @@ CUDA_DEVEL_IMAGE = "nvidia/cuda:12.8.1-devel-ubuntu22.04"
 
 class ModalAdapter:
     id = "modal"
+    # Modal normally hands over a GPU in seconds: longer than this means we are in its queue.
+    start_deadline = timedelta(minutes=5)
 
     # ---- credentials -------------------------------------------------------------------------
     def validate_credentials(self) -> ValidationResult:

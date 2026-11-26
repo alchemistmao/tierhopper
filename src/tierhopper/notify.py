@@ -59,8 +59,8 @@ class WhatsApp:
             lines += ["", f"Approve on your Mac: tierhopper approve {job.id}"]
         return self.send("\n".join(lines))
 
-    def job_done(self, job: Job) -> bool:
-        return self.send(f"🟢 TierHopper · Done\n{job.name} finished. Results: tierhopper fetch {job.id}")
+    def job_done(self, job: Job, summary: dict[str, Any] | None = None) -> bool:
+        return self.send(done_text(job, summary or {}, actions.link("status", job.id)))
 
     def job_failed(self, job: Job, message: str) -> bool:
         last = message.strip().splitlines()[-1][:200] if message.strip() else "see job_status"
@@ -77,6 +77,39 @@ class WhatsApp:
 
     def weekly(self, report: dict[str, Any]) -> bool:
         return self.send(weekly_text(report))
+
+
+def duration(seconds: float) -> str:
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes, hours = round(seconds / 60), seconds // 3600
+    return f"{minutes} min" if seconds < 3600 else f"{hours} h {(seconds % 3600) // 60:02d} min"
+
+
+def done_text(job: Job, s: dict[str, Any], details_link: str | None = None) -> str:
+    """The message the owner reads on the phone when a job ends: the outcome without opening anything."""
+    lines = ["🟢 TierHopper · Done", job.name]
+    for work in s.get("work") or []:
+        lines.append(f"✅ {work}")
+    if s.get("wall_seconds"):
+        gpu = f" ({duration(s['gpu_seconds'])} on the GPU)" if s.get("gpu_seconds") else ""
+        lines.append(f"⏱ {duration(s['wall_seconds'])} from send to finish{gpu}")
+    if s.get("ran_on"):
+        extra = []
+        if s.get("parts", 1) > 1:
+            extra.append(f"{s['parts']} parts")
+        if s.get("attempts", 1) > s.get("parts", 1):
+            extra.append(f"{s['attempts']} attempts")
+        lines.append("🖥 " + " → ".join(s["ran_on"]) + (f" ({', '.join(extra)})" if extra else ""))
+    if "spent_usd" in s:
+        cost = "free" if not s["spent_usd"] else f"${s['spent_usd']:.2f} spent"
+        saved = f" · about ${s['saved_usd']:.2f} saved vs renting" if s.get("saved_usd") else ""
+        lines.append(f"💰 {cost}{saved}")
+    lines.append(f"📁 Results: tierhopper fetch {job.id}")
+    if details_link:
+        lines.append(f"Details: {details_link}")
+    return "\n".join(lines)
 
 
 def health_text(down: list[dict[str, Any]], back: list[str]) -> str:
@@ -156,10 +189,14 @@ class Notifier:
             self.whatsapp.approval_needed(job, reason, paid)
         self._push_all("Needs your OK", f"{job.name}: {reason}", f"/jobs/{job.id}")
 
-    def job_done(self, job: Job) -> None:
+    def job_done(self, job: Job, summary: dict[str, Any] | None = None) -> None:
         if self.whatsapp:
-            self.whatsapp.job_done(job)
-        self._push_all("Done", f"{job.name} finished. Results are ready.", f"/jobs/{job.id}")
+            self.whatsapp.job_done(job, summary)
+        took = duration(summary["wall_seconds"]) if summary and summary.get("wall_seconds") else None
+        where = " → ".join(summary.get("ran_on") or []) if summary else ""
+        detail = " · ".join(x for x in (took, where) if x)
+        self._push_all("Done", f"{job.name} finished" + (f" ({detail})" if detail else "") + ". Results are ready.",
+                       f"/jobs/{job.id}")
 
     def providers_health(self, down: list[dict[str, Any]], back: list[str]) -> None:
         if self.whatsapp:

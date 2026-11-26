@@ -1069,13 +1069,14 @@ wheels = [
 
 [[package]]
 name = "lightning-sdk"
-version = "2026.9.18.post1"
+version = "2026.11.20"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
     { name = "click" },
     { name = "docker" },
     { name = "fastapi" },
+    { name = "keyring" },
     { name = "packaging" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -1089,7 +1090,7 @@ dependencies = [
     { name = "websocket-client" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d3/a1/65083af03f8e8f0dd9218fbcb2673b5f6f9bad3f604fd1a616d5bcf9be07/lightning_sdk-2026.9.18.post1-py3-none-any.whl", hash = "sha256:69e5744c4fc90194c71887ab83e1c3376ab6fcb0a53c24e480b66438da2b31b5", size = 3240057, upload-time = "2026-09-18T13:42:32.484Z" },
+    { url = "https://files.pythonhosted.org/packages/33/86/f95dc1de8cf5e703c22b017a44bb2dc3151b7554c835e527129f0fc81778/lightning_sdk-2026.11.20-py3-none-any.whl", hash = "sha256:85b3fd635077b534606e3d1f45f51b42df7ca7d59b22aaa1d0f1f7fb006675c6", size = 3337747, upload-time = "2026-11-20T19:20:03.633Z" },
 ]
 
 [[package]]

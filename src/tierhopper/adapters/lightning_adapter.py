@@ -47,14 +47,19 @@ _STATUS = {
 
 def _auth() -> None:
     """Prefer the official login file; fall back to Keychain/env values (control plane)."""
-    creds_file = Path.home() / ".lightning" / "credentials.json"
-    if creds_file.is_file() and not os.environ.get("LIGHTNING_API_KEY"):
+    if logged_in() and not os.environ.get("LIGHTNING_API_KEY"):
         return
     user_id = credentials.get_secret("lightning", "user_id")
     api_key = credentials.get_secret("lightning", "api_key")
     if user_id and api_key:
         os.environ["LIGHTNING_USER_ID"] = user_id
         os.environ["LIGHTNING_API_KEY"] = api_key
+
+
+def logged_in() -> bool:
+    """`lightning login` was done on this machine (login.json since SDK 2026.11, credentials.json before)."""
+    home = Path.home() / ".lightning"
+    return (home / "login.json").is_file() or (home / "credentials.json").is_file()
 
 
 def _teamspace() -> str:
@@ -78,16 +83,16 @@ def discover_teamspace() -> str:
 
 
 def import_login_credentials() -> bool:
-    """Copy user_id/api_key from the official login file into the Keychain (for the control plane)."""
+    """True when this machine is logged in. An old-style login file also carries a key the control plane can
+    use: copy it to the Keychain. The browser login (SDK 2026.11+) has no such key, so the cloud scheduler
+    follows Lightning jobs through the runner's own reports and this machine does the asking."""
     creds_file = Path.home() / ".lightning" / "credentials.json"
-    if not creds_file.is_file():
-        return False
-    data = json.loads(creds_file.read_text())
-    if not (data.get("user_id") and data.get("api_key")):
-        return False
-    credentials.set_secret("lightning", "user_id", data["user_id"])
-    credentials.set_secret("lightning", "api_key", data["api_key"])
-    return True
+    if creds_file.is_file():
+        data = json.loads(creds_file.read_text())
+        if data.get("user_id") and data.get("api_key"):
+            credentials.set_secret("lightning", "user_id", data["user_id"])
+            credentials.set_secret("lightning", "api_key", data["api_key"])
+    return logged_in()
 
 
 class LightningAdapter:

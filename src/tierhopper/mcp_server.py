@@ -53,7 +53,28 @@ def submit_job(spec_path: str, dry_run: bool = False) -> dict[str, Any]:
     spec_path: absolute path to a tierhopper.yaml (or the directory containing it).
     dry_run: only return the routing plan and estimate, without launching anything.
     """
-    return _safe(_service().submit_job, spec_path, dry_run=dry_run)
+    got = _safe(_service().submit_job, spec_path, dry_run=dry_run)
+    if got.get("job_id"):
+        got["when_it_ends"] = (f"Run `{watch_command(got['job_id'])}` as a background shell command now: it exits "
+                               "when the job ends (results already downloaded), which brings you back to report "
+                               "to the user without them having to ask.")
+    return got
+
+
+def watch_command(job_id: str) -> str:
+    """The shell command that follows one job to its end, for this install (PATH or the project folder)."""
+    import shlex
+    import shutil
+    from pathlib import Path
+
+    if shutil.which("tierhopper"):
+        return f"tierhopper watch {job_id}"
+    root = Path(__file__).resolve().parents[2]
+    if (root / "pyproject.toml").is_file() and shutil.which("uv"):
+        return f"uv --directory {shlex.quote(str(root))} run tierhopper watch {job_id}"
+    import sys
+
+    return f"{shlex.quote(sys.executable)} -m tierhopper.cli watch {job_id}"
 
 
 @mcp.tool()

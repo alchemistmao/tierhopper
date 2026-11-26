@@ -210,3 +210,16 @@ def test_a_provider_status_from_a_newer_version_does_not_break_listing(tmp_path)
 
     assert Provider.model_validate(raw).status == ProviderStatus.DISABLED  # skipped, not a crash
     assert th.submit_job(EXAMPLE)["status"] == "running"
+
+
+def test_a_submitted_job_tells_the_caller_how_to_be_told_when_it_ends(monkeypatch):
+    from tierhopper import mcp_server
+
+    class Fake:
+        def submit_job(self, spec_path, dry_run=False):
+            return {"dry_run": True} if dry_run else {"job_id": "abc123", "status": "running"}
+
+    monkeypatch.setattr(mcp_server, "_service", lambda: Fake())
+    submit = getattr(mcp_server.submit_job, "fn", mcp_server.submit_job)
+    assert "when_it_ends" not in submit("x", dry_run=True)
+    assert "tierhopper watch abc123" in submit("x")["when_it_ends"]

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime } from "./useRealtime";
 
 /** Loads a JSON endpoint on every Supabase Realtime change, with slow polling as a fallback. */
-export function usePoll<T>(url: string, everyMs = 30000) {
+export function usePoll<T>(url: string, everyMs = 10000) {
   const [data, setData] = useState<T | null>(null);
   const [live, setLive] = useState(true);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);

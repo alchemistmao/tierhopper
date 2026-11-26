@@ -513,6 +513,8 @@ class TierHopper:
                                    package_url=self._package_url(job),
                                    gpu_fallbacks=[g.type for g in cand.alternatives])
                 attempt.external_ref = self.adapter(cand.provider).submit(plan)
+                if "ingest_url" in plan.runner_config:  # this runner reports in: its silence means something
+                    attempt.external_ref = {**attempt.external_ref, "beats": True}
             except AdapterError as e:
                 exclude.add(cand.provider.id)
                 failures[cand.provider.name] = "could not start the job"
@@ -626,6 +628,7 @@ class TierHopper:
             return {"ok": True, "ignored": True}
         shard = self.store.get_shard(attempt.shard_id)
         job = self.store.get_job(shard.job_id)
+        attempt.external_ref = {**attempt.external_ref, "heard": True}  # the runner is alive on a machine
         kind = body.get("kind")
         progress, guessed = body.get("progress"), False
         counter = parse_counter([str(x) for x in (body.get("lines") or body.get("tail") or [])])
@@ -765,7 +768,7 @@ class TierHopper:
                     self.store.update_job(job)
                     self._event(job, "done", results=job.results_prefix)
                     if self.notifier:
-                        self.notifier.job_done(job)
+                        self.notifier.job_done(job, self.done_summary(job))
                     continue
                 if job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
                     dispatched += self._fill_parallel(job)
@@ -823,9 +826,12 @@ class TierHopper:
             attempt.message = fresh.message or attempt.message
             attempt.progress_end = fresh.progress_end if fresh.progress_end is not None else attempt.progress_end
             attempt.gpu_seconds = fresh.gpu_seconds or attempt.gpu_seconds
+            attempt.external_ref = {**attempt.external_ref, **fresh.external_ref}
             if fresh.status.terminal:
                 attempt.status, attempt.ended_at = fresh.status, fresh.ended_at
                 return
+        if hop and self._left_waiting(job, shard, attempt, provider, adapter):
+            return
         # The runner said "completed" and its results are saved: the work is done, whatever the provider says next.
         finished = attempt.end_reason == EndReason.COMPLETED and self._results_saved(job, shard)
         try:
@@ -932,6 +938,68 @@ class TierHopper:
         self.store.update_shard(shard)
         self._dispatch(job, shard, self._excluded(shard))
 
+    def _left_waiting(self, job: Job, shard: Shard, attempt: Attempt, provider: Provider,
+                      adapter: ProviderAdapter) -> bool:
+        """The provider accepted the job but gave it no machine in time (its queue): move the part to another
+        free GPU that can take it now. With nowhere else to go, it keeps its place in the queue."""
+        limit = getattr(adapter, "start_deadline", None)
+        ref = attempt.external_ref
+        if not limit or not ref.get("beats") or ref.get("heard") or attempt.end_reason \
+                or now() - attempt.started_at < limit:
+            return False
+        providers = self.store.list_providers()
+        credits = {p.id: self.store.latest_credit(p.id) for p in providers}
+        elsewhere = self._excluded(shard) | {provider.id}
+        free, _ = plan_route(self._spec(job), providers, credits, exclude=elsewhere, allow_paid=False,
+                             stats=self.stats(), busy=self._busy())
+        if not free:
+            return False
+        try:
+            adapter.cancel(ref)
+        except Exception:  # noqa: BLE001 - could not leave the queue: stay in it, never run the part twice
+            return False
+        waited = int((now() - attempt.started_at).total_seconds() // 60)
+        attempt.status, attempt.end_reason, attempt.ended_at = AttemptStatus.CANCELLED, EndReason.PREEMPTED, now()
+        attempt.message = f"no GPU from {provider.name} after {waited} minutes in its queue"
+        attempt.gpu_seconds = attempt.cost_usd = attempt.market_cost_usd = 0.0
+        if not self.store.finish_attempt(attempt):
+            return True  # another process already handled this attempt
+        self._event(job, "attempt_ended", attempt=attempt, reason="no_gpu_in_time", message=attempt.message)
+        self._event(job, "hop", from_provider=provider.id, reason="no_gpu_in_time",
+                    resume_from=shard.checkpoint_key is not None)
+        shard.status = JobStatus.QUEUED
+        self.store.update_shard(shard)
+        self._dispatch(job, shard, elsewhere)
+        return True
+
+    def done_summary(self, job: Job) -> dict[str, Any]:
+        """What the owner wants to know when a job ends: how long, how much work, where it ran, what it cost."""
+        attempts = sorted((a for s in self.store.list_shards(job.id) for a in self.store.list_attempts(s.id)),
+                          key=lambda a: a.started_at)
+        names = {p.id: p.name for p in self.store.list_providers()}
+        ran_on: list[str] = []
+        for a in attempts:
+            if not a.gpu_seconds and a.end_reason != EndReason.COMPLETED:
+                continue  # never got a machine there
+            label = f"{names.get(a.provider_id, a.provider_id)} · {a.gpu_type}"
+            if label not in ran_on:
+                ran_on.append(label)
+        totals: dict[str, list[int]] = {}
+        for c in (job.estimate.get("counters") or {}).values():  # one counter per part
+            done, total = totals.setdefault(c["unit"], [0, 0])
+            totals[c["unit"]] = [done + c["done"], total + c["total"]]
+        end = job.finished_at or now()
+        return {
+            "wall_seconds": (end - job.created_at).total_seconds(),
+            "gpu_seconds": sum(a.gpu_seconds for a in attempts),
+            "ran_on": ran_on,
+            "attempts": len(attempts),
+            "parts": len(self.store.list_shards(job.id)),
+            "work": [f"{d} of {t} {unit}" for unit, (d, t) in totals.items()],
+            "spent_usd": round(sum(a.cost_usd for a in attempts), 2),
+            "saved_usd": round(sum(a.market_cost_usd for a in attempts if not a.cost_usd), 2),
+        }
+
     def _complete_shard(self, job: Job, shard: Shard, attempt: Attempt, provider: Provider,
                         result: dict | None) -> None:
         dest = self.results_dir / job.id
@@ -951,7 +1019,7 @@ class TierHopper:
             job.status, job.finished_at = JobStatus.DONE, now()
             self._event(job, "done", attempt=attempt, files=len(files), results=str(dest))
             if self.notifier:
-                self.notifier.job_done(job)
+                self.notifier.job_done(job, self.done_summary(job))
         self.store.update_job(job)
 
     def _download_results(self, job: Job, shard: Shard, dest: Path) -> list[Path] | None:

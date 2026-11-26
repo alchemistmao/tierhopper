@@ -49,7 +49,11 @@ outputs: [results/]     # folders/files brought back
 ## Flow
 1. `submit_job(spec_path=<absolute path>, dry_run=true)` → show the plan and estimate to the user.
 2. `submit_job(spec_path=...)` → returns `job_id`.
-3. `job_status(job_id)` to follow it; when `status` is `done`, `fetch_results(job_id, dest_dir=...)` brings the results back.
+3. Right after submitting, run the command given in `when_it_ends` (`tierhopper watch <job_id>`) as a
+   background shell command. It exits when the job ends, with the results already downloaded, and that
+   brings you back to tell the user — do not wait for them to ask whether it finished. Keep working on
+   other things meanwhile; do not poll in a loop.
+   `job_status(job_id)` shows where it is at any moment; when `status` is `done`, `fetch_results(job_id, dest_dir=...)` brings the results back.
    `job_logs(job_id, contains="error")` shows what the job printed — use it to see why a job failed or is slow.
    `list_jobs()` finds a job_id (e.g. after a new session). Never query the TierHopper database directly.
    `pause_job`, `resume_job` and `cancel_job` control a job. Submit once: if a reply was cut off, call

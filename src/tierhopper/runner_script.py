@@ -239,7 +239,7 @@ def main() -> int:
         reader.start()
         deadline = cfg.get("deadline_ts")
         every_ckpt = int(cfg.get("checkpoint_every_s", 600))
-        every_beat = int(cfg.get("heartbeat_every_s", 60))
+        every_beat = int(cfg.get("heartbeat_every_s", 20))  # short jobs show progress too
         next_ckpt, next_beat = time.time() + every_ckpt, time.time() + every_beat
         while child.poll() is None:
             time.sleep(1)
