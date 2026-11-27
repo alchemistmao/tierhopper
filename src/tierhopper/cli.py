@@ -220,6 +220,7 @@ def _connect(th, provider_id: str) -> None:
         _fail(f"unknown provider {provider_id!r}. Known: {known}")
     if provider.adapter is None:
         _fail(f"{provider.name} has no adapter yet")
+    pasted_now = False
     if provider_id in NEEDS_STORAGE and th.blobs is None:
         _fail(f"{provider.name} needs full mode storage (Cloudflare R2). Run `tierhopper config r2` first, "
               "or start with Kaggle or Modal, which work out of the box.")
@@ -240,12 +241,14 @@ def _connect(th, provider_id: str) -> None:
         if not credentials.has_secret("runpod", "api_key"):
             typer.echo(f"Create an API key at {provider.api_key_url}")
             webbrowser.open(provider.api_key_url or "")
+            pasted_now = True
             credentials.set_secret("runpod", "api_key", typer.prompt("RunPod API key", hide_input=True).strip())
         typer.echo("RunPod is paid: the GPU test costs about US$ 0.05 (a few minutes on the cheapest GPU).")
         if not typer.confirm("Run the paid GPU test now?", default=False):
             _fail("cancelled; RunPod stays pending")
     elif provider_id == "kaggle":
         if not credentials.has_secret("kaggle", "api_token"):
+            pasted_now = True
             typer.echo("1. Sign in to Kaggle and verify your phone number at https://www.kaggle.com/settings")
             typer.echo("   (Kaggle only gives GPUs to phone-verified accounts).")
             typer.echo(f"2. On {provider.api_key_url}, under “API Tokens”, click “Generate New Token” and copy it.")
@@ -258,11 +261,19 @@ def _connect(th, provider_id: str) -> None:
         if provider_id == "kaggle" and "phone" in check.detail:  # the token is fine; the account is not ready
             _fail("Your Kaggle token works, but the account has no GPU yet. Verify your phone number at "
                   "https://www.kaggle.com/settings and run this command again.")
-        if provider_id in ("kaggle", "runpod"):  # forget a key that does not work, so the next try asks again
+        reason = next((ln.strip() for ln in check.detail.splitlines() if ln.strip()), "")[:160]
+        if pasted_now:  # forget the key just pasted, so the next try asks again
             credentials.delete_secret(provider_id, "api_token" if provider_id == "kaggle" else "api_key")
-            reason = next((ln.strip() for ln in check.detail.splitlines() if ln.strip()), "")[:160]
             _fail(f"{provider.name} did not accept that key ({reason}).\n"
                   "  Nothing was saved. Run this command again and paste a fresh token.")
+        if provider_id in ("kaggle", "runpod"):
+            # A key that was already saved is never deleted because of one failed check (it may be the network
+            # or the provider). Replacing it is the user's decision.
+            field = "api_token" if provider_id == "kaggle" else "api_key"
+            if typer.confirm(f"{provider.name} did not accept the saved key ({reason}). Replace it with a new one?",
+                             default=False):
+                credentials.delete_secret(provider_id, field)
+                _fail("Saved key removed. Run this command again and paste a fresh one.")
         _fail(check.detail)
     _ok(check.detail)
 
@@ -271,7 +282,13 @@ def _connect(th, provider_id: str) -> None:
     ok, detail = th.smoke_test(provider_id, on_update=lambda m: typer.echo(f"  · {m}"))
     if not ok:
         _fail(f"the GPU test failed: {detail}\nYour key is saved; run this command again to retry.")
+    from tierhopper.models import now
+    from tierhopper.service import place
+
+    # The login was just renewed here and is copied to the cloud below: older failures no longer describe it.
+    # Each place checks again by itself and marks the provider down if it does not work there.
     provider.status = ProviderStatus.ACTIVE
+    provider.health = {place(): {"ok": True, "detail": check.detail[:300], "at": now().isoformat()}}
     th.store.upsert_provider(provider)
     th.refresh_credit(provider)
     _push_to_cloud(provider_id)
@@ -500,7 +517,7 @@ def watch(job_id: str = typer.Argument(None, help="Follow only this job (default
     from tierhopper.models import JobStatus
 
     th = _service()
-    live = (JobStatus.RUNNING, JobStatus.QUEUED)
+    live = (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.AWAITING_APPROVAL)  # waiting for the owner's OK too
     seen: dict[str, str] = {}
     typer.echo("Following jobs (Ctrl+C stops watching; the jobs keep running in the cloud)…")
     while True:

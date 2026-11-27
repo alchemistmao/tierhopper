@@ -19,6 +19,10 @@ STATIC_SPEED = {
 }
 
 
+MIN_RUNS = 2     # runs of a spec on a GPU before its pace is believed
+MAX_DRIFT = 2.0  # learned speed stays within this factor of the static table
+
+
 def static_speed(gpu: str) -> float:
     return STATIC_SPEED.get(gpu, 1.0)
 
@@ -79,6 +83,8 @@ def _learn_speed(store: Store, attempts: list[Attempt], stats: dict[str, Provide
         rate[spec_of[a.shard_id]][(a.provider_id, a.gpu_type)].append(a.gpu_seconds / done)
     ratios: dict[tuple[str, str], list[float]] = defaultdict(list)
     for per_gpu in rate.values():
+        # One run says little (a cold start, a slow download): a GPU counts for a spec from its second run on.
+        per_gpu = {k: v for k, v in per_gpu.items() if len(v) >= MIN_RUNS}
         if len(per_gpu) < 2:
             continue
         # Normalise against a T4-equivalent baseline derived from the static table.
@@ -86,8 +92,10 @@ def _learn_speed(store: Store, attempts: list[Attempt], stats: dict[str, Provide
         for (provider, gpu), values in per_gpu.items():
             ratios[(provider, gpu)].append(baseline / median(values))
     for (provider, gpu), values in ratios.items():
+        # History corrects the table, it does not replace it: stay within a factor of two of the known speed.
+        known = static_speed(gpu)
         stats[provider].provider_id = provider
-        stats[provider].speed[gpu] = median(values)
+        stats[provider].speed[gpu] = min(max(median(values), known / MAX_DRIFT), known * MAX_DRIFT)
 
 
 def estimate_t4_hours(store: Store, spec_hash: str, stats: dict[str, ProviderStats]) -> float | None:

@@ -24,6 +24,7 @@ from tierhopper.adapters.base import (
     AttemptState,
     CreditReading,
     ValidationResult,
+    apt_step,
 )
 from tierhopper.adapters.lightning_adapter import SYSTEM_TOOLS
 from tierhopper.models import AttemptStatus, CreditSource, CreditUnit, Provider
@@ -88,6 +89,8 @@ class RunPodAdapter:
         fetch = "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], '/tmp/pkg.tgz')"
         steps = [SYSTEM_TOOLS, f"python -c {shlex.quote(fetch)} \"$TH_PACKAGE_URL\"",
                  "mkdir -p /job && tar xzf /tmp/pkg.tgz -C /job && cd /job"]
+        if apt_step(plan.spec.apt):
+            steps.append(apt_step(plan.spec.apt))
         if plan.spec.requirements:
             steps.append(f"pip install -q -r {shlex.quote(plan.spec.requirements)}")
         steps.append(f"python {RUNNER_FILE}")

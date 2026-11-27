@@ -96,10 +96,14 @@ class SQLiteStore:
                   (snap.id, snap.provider_id, _iso(snap.measured_at), self._doc(snap)))
         return snap
 
-    def latest_credit(self, provider_id: str) -> CreditSnapshot | None:
-        rows = self._run("select doc from credits where provider_id = ? order by measured_at desc limit 1",
+    def latest_credit(self, provider_id: str, source: str | None = None) -> CreditSnapshot | None:
+        rows = self._run("select doc from credits where provider_id = ? order by measured_at desc limit 200",
                          (provider_id,))
-        return CreditSnapshot.model_validate_json(rows[0][0]) if rows else None
+        for (doc,) in rows:
+            snap = CreditSnapshot.model_validate_json(doc)
+            if source in (None, snap.source.value):
+                return snap
+        return None
 
     # ---- projects / jobs -----------------------------------------------------------------------
     def get_or_create_project(self, slug: str) -> Project:

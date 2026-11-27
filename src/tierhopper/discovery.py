@@ -52,7 +52,14 @@ Report each distinct provider once with the `report_offer` tool. Report honestly
 - `confidence` (0-1) reflects how sure you are that the offer exists today exactly as described.
 - Put the URLs you actually read in `evidence_urls`.
 
-Do not report: providers in the user's already-known list, offers that require several accounts,
+Finish what you start: a candidate reported with "unknown" for the API or the terms is useless to the user.
+For every offer you report, open the provider's API/SDK documentation and its terms of service and answer
+"yes" or "no". Keep "unknown" for the case where the official pages could not be reached at all, and say so
+in the summary. The user's message may list UNRESOLVED candidates from earlier runs: settle those first, the
+same way, and report each of them again with the answers. Fewer offers fully verified beat many half checked.
+
+Do not report: providers in the user's already-known list, anything in the user's already-rejected list
+unless its offer has clearly changed, offers that require several accounts,
 anything that needs bypassing CAPTCHA or phone verification, expired promotions, or rumours you could
 not confirm on an official page. When you have reported everything worth reporting, reply with one
 short sentence summarising the run."""
@@ -157,19 +164,51 @@ def to_provider(f: Finding) -> Provider:
     )
 
 
-def research(known_names: list[str], client: Any = None, max_searches: int = 20) -> tuple[list[dict], str]:
-    """Run the research loop. Returns (reported offers, final one-line summary)."""
+# USD per million tokens (input, output, cache read); cache writes cost 1.25x input. From the Claude pricing table.
+PRICES = {"claude-opus-5-5": (4.00, 20.00, 0.20)}
+
+
+def add_usage(total: dict[str, float], usage: Any) -> None:
+    """Add one response's usage to the run's total (tokens, web searches, web fetches)."""
+    for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+        total[key] = total.get(key, 0) + (getattr(usage, key, None) or 0)
+    tools = getattr(usage, "server_tool_use", None)
+    for key in ("web_search_requests", "web_fetch_requests"):
+        total[key] = total.get(key, 0) + (getattr(tools, key, None) or 0 if tools is not None else 0)
+
+
+def token_cost_usd(usage: dict[str, float], model: str = "") -> float | None:
+    """What the tokens of a run cost. Web searches are billed apart, per request: see `web_search_requests`."""
+    price = PRICES.get(model or MODEL)
+    if price is None:
+        return None
+    inp, out, read = price
+    return round((usage.get("input_tokens", 0) * inp + usage.get("output_tokens", 0) * out
+                  + usage.get("cache_creation_input_tokens", 0) * inp * 1.25
+                  + usage.get("cache_read_input_tokens", 0) * read) / 1_000_000, 4)
+
+
+def research(known_names: list[str], client: Any = None, max_searches: int = 20,
+             unresolved: list[str] | None = None, rejected: list[str] | None = None,
+             usage: dict[str, float] | None = None) -> tuple[list[dict], str]:
+    """Run the research loop. Returns (reported offers, final one-line summary). `usage` is filled in place."""
+    usage = usage if usage is not None else {}
     import anthropic
 
     client = client or anthropic.Anthropic(api_key=credentials.get_secret("anthropic", "api_key"),
                                            timeout=600.0, max_retries=2)
     tools = [
         {"type": "web_search_20260209", "name": "web_search", "max_uses": max_searches},
-        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": max_searches},
+        # A page is read for a few facts (free tier, API, terms): cap what each one adds to the context.
+        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": max_searches, "max_content_tokens": 6000},
         REPORT_TOOL,
     ]
     user = ("Already known (skip these): " + ", ".join(known_names) + ".\n"
-            "Curated sources to check first:\n" + "\n".join(f"- {u}" for u in CURATED_SOURCES) + "\n"
+            + ("UNRESOLVED from earlier runs (settle these first: read their API docs and terms, then report "
+               "them again): " + ", ".join(unresolved) + ".\n" if unresolved else "")
+            + ("Already rejected (skip unless the offer changed): " + ", ".join(rejected) + ".\n"
+               if rejected else "")
+            + "Curated sources to check first:\n" + "\n".join(f"- {u}" for u in CURATED_SOURCES) + "\n"
             f"Today is {now().date().isoformat()}. Report up to 8 offers.")
     messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
     offers: list[dict] = []
@@ -177,10 +216,12 @@ def research(known_names: list[str], client: Any = None, max_searches: int = 20)
     for _ in range(MAX_CONTINUATIONS):
         with client.beta.messages.stream(
             model=MODEL, max_tokens=16000, system=SYSTEM, tools=tools, messages=messages,
+            cache_control={"type": "ephemeral"},  # a continued run re-reads its own history at the cached price
             output_config={"effort": "medium"},
             betas=["server-side-fallback-2026-07-01"], fallbacks="default",
         ) as stream:
             response = stream.get_final_message()
+        add_usage(usage, getattr(response, "usage", None))
         if response.stop_reason == "refusal":
             return offers, "The research request was declined."
         messages.append({"role": "assistant", "content": response.content})
@@ -200,10 +241,30 @@ def research(known_names: list[str], client: Any = None, max_searches: int = 20)
     return offers, summary
 
 
+def earlier(findings: list[dict], known: set[str]) -> tuple[list[str], list[str]]:
+    """From earlier runs: names still waiting for an answer, and names already turned down. One entry per
+    provider (its latest verdict), so the same candidate is not researched from scratch every day."""
+    latest: dict[str, dict] = {}
+    for f in findings:  # newest first
+        sid = slug(str(f.get("name", "")))[:18]
+        if sid and sid not in latest:
+            latest[sid] = f
+    open_, closed = [], []
+    for sid, f in latest.items():
+        if any(k in sid or sid in k for k in known if len(k) > 3):
+            continue
+        (open_ if f.get("status") == "needs_review" else closed if f.get("status") == "rejected" else []).append(
+            str(f.get("name")))
+    return open_[:8], closed[:30]
+
+
 def run_discovery(store: Any, notifier: Any = None, client: Any = None, dry_run: bool = False) -> dict[str, Any]:
     known_providers = store.list_providers()
     known = {p.id for p in known_providers} | {slug(p.name) for p in known_providers} | {"colab", "google-colab"}
-    offers, summary = research(sorted({p.name for p in known_providers} | {"Google Colab"}), client=client)
+    unresolved, rejected = earlier(store.list_findings(limit=200), known)
+    usage: dict[str, float] = {}
+    offers, summary = research(sorted({p.name for p in known_providers} | {"Google Colab"}), client=client,
+                               unresolved=unresolved, rejected=rejected, usage=usage)
     findings = [judge(o, known) for o in offers]
     added = []
     for f in findings:
@@ -222,5 +283,8 @@ def run_discovery(store: Any, notifier: Any = None, client: Any = None, dry_run:
                                "official_api": f.official_api, "headless": f.headless, "tos_ok": f.tos_ok,
                                "status": f.status, "reason": f.reason, "provider_id": f.provider_id})
     return {"summary": summary, "reported": len(offers), "added_to_registry": added,
+            "settled_from_earlier": [f.name for f in findings if f.status in ("qualified", "rejected")
+                                     and any(slug(f.name)[:18] == slug(u)[:18] for u in unresolved)],
+            "usage": usage, "token_cost_usd": token_cost_usd(usage),
             "findings": [{"name": f.name, "status": f.status, "confidence": round(f.confidence, 2),
                           "reason": f.reason, "url": f.url} for f in findings]}

@@ -1,0 +1,11 @@
+name: hello-image
+project: examples
+# A ready image from a public registry: PyTorch and CUDA are already inside, nothing is installed at start.
+image: pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+entrypoint: python run.py
+gpu:
+  min_vram_gb: 8
+  types: [T4]            # the smallest GPU is enough for this check
+estimate_hours: 0.05
+timeout_minutes: 15
+outputs: [results/]

@@ -47,6 +47,11 @@ def gpu_fits(offer: GpuOffer, spec: JobSpec) -> bool:
     return offer.vram_gb >= spec.gpu.min_vram_gb
 
 
+# Adapters that run a job in the container image named by its `image:` field. Kaggle never will (it has no
+# such option); Lightning and RunPod take registry images and come next.
+RUNS_IMAGES = {"modal"}
+
+
 def plan_route(
     spec: JobSpec,
     providers: list[Provider],
@@ -57,9 +62,13 @@ def plan_route(
     busy: dict[str, int] | None = None,
     at: datetime | None = None,
     t4_hours: float | None = None,
+    committed: dict[str, float] | None = None,
 ) -> tuple[list[Candidate], list[Rejection]]:
-    """Return eligible candidates, best first, and why the others were rejected."""
-    exclude, stats, busy = exclude or set(), stats or {}, busy or {}
+    """Return eligible candidates, best first, and why the others were rejected.
+
+    committed: what the jobs already running on each provider are expected to use (same unit as its credit).
+    """
+    exclude, stats, busy, committed = exclude or set(), stats or {}, busy or {}, committed or {}
     ok: list[Candidate] = []
     rejected: list[Rejection] = []
     for p in providers:
@@ -75,6 +84,9 @@ def plan_route(
         if p.adapter not in IMPLEMENTED:
             rejected.append(Rejection(p.id, "no adapter yet"))
             continue
+        if spec.image and p.adapter not in RUNS_IMAGES:
+            rejected.append(Rejection(p.id, "cannot run the job's own container image yet"))
+            continue
         if p.kind == ProviderKind.PAID and not allow_paid:
             rejected.append(Rejection(p.id, "paid provider needs your approval"))
             continue
@@ -86,9 +98,21 @@ def plan_route(
             rejected.append(Rejection(p.id, f"no GPU with {spec.gpu.min_vram_gb:g} GB+"))
             continue
         credit = credits.get(p.id)
-        if credit is not None and credit.remaining <= 0 and p.kind != ProviderKind.PAID:
-            rejected.append(Rejection(p.id, "free credit used up"))
-            continue
+        if credit is not None and p.kind != ProviderKind.PAID:
+            free = credit.remaining - committed.get(p.id, 0.0)  # what is really left for a new job
+            if credit.remaining <= 0:
+                rejected.append(Rejection(p.id, "free credit used up"))
+                continue
+            if credit.unit == CreditUnit.USD:
+                # Dollar credit sits in front of a card: a job that does not fit would be billed for real.
+                # So the job goes there only when its whole estimated cost fits what is left, with a reserve.
+                cheapest_need = min(job_cost(g, spec, stats.get(p.id), t4_hours) for g in fits)
+                if cheapest_need > free - USD_RESERVE:
+                    rejected.append(Rejection(p.id, f"free credit left (${max(free, 0):.2f}) does not cover "
+                                                    f"this job (about ${cheapest_need:.2f})"))
+                    continue
+            credit = credit.model_copy(update={"remaining": free - (USD_RESERVE if credit.unit == CreditUnit.USD
+                                                                    else 0.0)})
         best = pick_gpu(p, fits, credit, spec, stats.get(p.id), t4_hours)
         slower = sorted((g for g in fits if speed_of(g, stats.get(p.id)) < speed_of(best, stats.get(p.id))),
                         key=lambda g: -speed_of(g, stats.get(p.id)))
@@ -97,6 +121,16 @@ def plan_route(
     ok.sort(key=lambda c: (c.provider.kind == ProviderKind.PAID, -speed_of(c.gpu, stats.get(c.provider.id)),
                            -c.score))
     return ok, rejected
+
+
+USD_RESERVE = 1.0  # never plan to spend the last dollar of a free credit: provider billing has extras
+COST_MARGIN = 1.2  # CPU, memory and startup are billed on top of the GPU price
+
+
+def job_cost(gpu: GpuOffer, spec: JobSpec, stats: ProviderStats | None, t4_hours: float | None) -> float:
+    """Estimated dollars a job uses on this GPU. Without an estimate, its whole time limit (the worst case)."""
+    hours = t4_hours / speed_of(gpu, stats) if t4_hours else spec.timeout_minutes / 60
+    return hours * gpu.usd_per_hour * COST_MARGIN
 
 
 def speed_of(gpu: GpuOffer, stats: ProviderStats | None) -> float:
@@ -121,7 +155,7 @@ def pick_gpu(provider: Provider, fits: list[GpuOffer], credit: CreditSnapshot | 
         return by_speed[0]
     for gpu in by_speed:
         hours = t4_hours / speed_of(gpu, stats) if t4_hours else spec.timeout_minutes / 60
-        need = hours if credit.unit == CreditUnit.GPU_HOURS else hours * gpu.usd_per_hour * 1.1
+        need = hours if credit.unit == CreditUnit.GPU_HOURS else hours * gpu.usd_per_hour * COST_MARGIN
         if need <= credit.remaining:
             return gpu
     return max(fits, key=lambda g: speed_of(g, stats) / max(g.usd_per_hour, 0.01))

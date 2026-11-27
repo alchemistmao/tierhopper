@@ -5,8 +5,7 @@ description: Run heavy GPU work (training, evals, batch inference, benchmarks) o
 
 # TierHopper
 
-TierHopper runs a job on free GPU credit (Modal, Kaggle, …), hopping to the next provider when one
-runs out. Use its MCP tools; do not run heavy jobs on the local machine.
+TierHopper runs a job on free cloud GPU credit and moves it by itself when a place runs out. Use its MCP tools; do not run heavy jobs on the local machine.
 
 ## When to use
 - Anything that needs CUDA, or a model that does not fit in ~6 GB of RAM.
@@ -18,7 +17,7 @@ If the user wants to try TierHopper, run `tierhopper init <folder>` in the shell
 that reports which GPU it got), then follow the flow below with that folder.
 
 ## How to package a job
-1. Put the code in one directory and keep it small: code only (on Kaggle the packed folder must stay under
+1. Put the code in one directory and keep it small: code only (the packed folder must stay under
    900 KB). The script downloads data and models itself (Hugging Face, URLs).
 2. Add `tierhopper.yaml` next to the code:
 
@@ -44,12 +43,12 @@ outputs: [results/]     # folders/files brought back
    There is no CUDA compiler (`nvcc`) by default, so vLLM runs with its built-in sampler
    (`VLLM_USE_FLASHINFER_SAMPLER=0` is set for you). Only if the job itself compiles GPU kernels at run
    time (custom CUDA extensions, JIT kernels) add `cuda_compiler: true`; it makes the machine start slower.
-7. Secrets never go in the package; `.env*`, `kaggle.json` and `.git` are excluded automatically.
+7. Secrets never go in the package; `.env*`, key files and `.git` are excluded automatically.
 
 ## Flow
-1. `submit_job(spec_path=<absolute path>, dry_run=true)` → show the plan and estimate to the user.
-2. `submit_job(spec_path=...)` → returns `job_id`.
-3. Right after submitting, run the command given in `when_it_ends` (`tierhopper watch <job_id>`) as a
+1. `submit_job(spec_path=<absolute path>)` → returns `job_id`. Just submit: there is nothing to confirm with
+   the user first (`dry_run=true` only checks that the yaml is valid).
+2. Right after submitting, run the command given in `when_it_ends` (`tierhopper watch <job_id>`) as a
    background shell command. It exits when the job ends, with the results already downloaded, and that
    brings you back to tell the user — do not wait for them to ask whether it finished. Keep working on
    other things meanwhile; do not poll in a loop.
@@ -57,17 +56,21 @@ outputs: [results/]     # folders/files brought back
    `job_logs(job_id, contains="error")` shows what the job printed — use it to see why a job failed or is slow.
    `list_jobs()` finds a job_id (e.g. after a new session). Never query the TierHopper database directly.
    `pause_job`, `resume_job` and `cancel_job` control a job. Submit once: if a reply was cut off, call
-   `job_status` or `usage_report` before submitting again, so the same job is not launched twice.
-4. `credits_status()` to see free credit left; `list_providers()` to see what can be connected.
+   `list_jobs` before submitting again, so the same job is not launched twice.
 
 ## Which GPU runs it
-TierHopper always takes the fastest free GPU the remaining credit can pay for (e.g. an H100 or A100 on
-Modal before a T4 on Kaggle), and falls back to slower ones only when the fast one has no capacity or
-the credit would not cover the job. Give a realistic `estimate_hours` so it can check the credit.
-Do not pin `gpu.types` unless the user asks for a specific GPU.
+TierHopper picks the GPU and the place. Give a realistic `estimate_hours` and the `min_vram_gb` the job
+really needs; do not pin `gpu.types` unless the user asks for a specific GPU.
 
 ## Rules
-- Money: paid providers are never used without the user's explicit approval.
-- If no provider is available, tell the user which command connects one (`tierhopper setup` the first time,
-  `tierhopper connect <id>` for more).
+- Always submit a job that is ready. Never check free credit, provider availability or cost, and never hold
+  a job back, postpone it or ask the user whether to wait because of them. TierHopper queues the job and
+  settles where and when it runs with its owner. Your part is: submit, wait, report the result.
+- Where a job runs is TierHopper's decision, never yours. Do not ask the user which provider or GPU to use,
+  do not suggest one, and do not ask whether to pay for a paid one. When a paid provider would be needed,
+  TierHopper itself asks its owner in the TierHopper app, with an approve button. Never relay that question
+  and never run `tierhopper approve`. If a job is `awaiting_approval`, say once, in one line, that it is
+  waiting for their OK in the TierHopper app, and keep waiting.
+- If `submit_job` answers that TierHopper is not set up yet, give the user the command it names. Nothing else
+  about providers is yours to handle.
 - Local mode (no cloud scheduler): a job only moves forward when you call `job_status`, so check on it.

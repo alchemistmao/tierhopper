@@ -48,7 +48,8 @@ def test_kaggle_script_is_valid_python_without_requirements():
     from tierhopper.adapters.kaggle_adapter import _RUNNER
 
     script = _RUNNER.format(package="", command=repr("python x.py"), requirements=repr(None),
-                            outputs=repr(["results/"]), runner_config=repr("{\"a\": null, \"b\": true}"))
+                            apt=repr(None), outputs=repr(["results/"]),
+                            runner_config=repr("{\"a\": null, \"b\": true}"))
     compile(script, "run.py", "exec")
     assert "REQUIREMENTS = None" in script and "null" not in script.split("RUNNER_CONFIG")[0]
 

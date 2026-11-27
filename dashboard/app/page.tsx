@@ -124,8 +124,8 @@ export default function Home() {
           <section className="card">
             <div className="h">Free credit left</div>
             {data?.credits.map((cr) => (
-              <div className="credit" key={cr.id}>
-                <div className="credit-top"><span>{cr.name}{cr.paid && <> <span className="kbd">paid</span></>}</span><span>{cr.left}</span></div>
+              <div className={`credit ${cr.down ? "down" : ""}`} key={cr.id}>
+                <div className="credit-top"><span>{cr.down && <span className="alarm" aria-label="needs attention" />}{cr.name}{cr.paid && <> <span className="kbd">paid</span></>}</span><span>{cr.left}{cr.estimated && " · est."}</span></div>
                 <div className="bar"><div className="fill" style={{ width: `${cr.pct}%`, background: cr.color }} /></div>
                 <small>{cr.note}</small>
               </div>

@@ -425,3 +425,104 @@ def test_with_no_other_free_gpu_the_job_keeps_its_place_in_the_modal_queue(tmp_p
     store.update_attempt(first)
     th.tick()
     assert len(store.attempts) == 1 and not modal.cancelled
+
+
+def test_a_job_whose_cost_does_not_fit_the_free_dollars_left_never_goes_to_that_provider(tmp_path):
+
+    modal = FakeAdapter("modal", [], resets_in_days=9)
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    left = {"usd": 1.02}  # two cents above the reserve: less than even this tiny job costs
+    modal.credit_remaining = lambda provider, used_usd=0.0: CreditReading(left["usd"], CreditUnit.USD,
+                                                                          CreditSource.API)
+    th, store = make(tmp_path, modal, kaggle)
+    got = th.submit_job(EXAMPLE, dry_run=True)
+    assert [c["provider"] for c in got["plan"]] == ["kaggle"]
+    assert "does not cover" in got["not_used"]["modal"]
+    left["usd"] = 25.0
+    assert th.submit_job(EXAMPLE, dry_run=True)["plan"][0]["provider"] == "modal"
+
+
+def test_two_jobs_do_not_count_on_the_same_free_dollars(tmp_path):
+    from tierhopper.routing import job_cost
+    from tierhopper.spec import load_spec
+
+    modal = FakeAdapter("modal", [], resets_in_days=9)
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store = make(tmp_path, modal, kaggle)
+    spec, _ = load_spec(EXAMPLE)
+    fastest = max(store.get_provider("modal").gpu_catalog, key=lambda g: g.usd_per_hour)
+    one = job_cost(fastest, spec, None, spec.estimate_hours)
+    budget = one * 1.5 + 1.0  # room for one job on the fastest GPU plus the reserve, not for two
+    modal.credit_remaining = lambda provider, used_usd=0.0: CreditReading(budget, CreditUnit.USD, CreditSource.API)
+    first = th.submit_job(EXAMPLE)
+    assert first["providers"] == ["modal"]
+    assert th._committed()["modal"] > 0
+    second = th.submit_job(EXAMPLE, dry_run=True)
+    again = [c["gpu"] for c in second["plan"] if c["provider"] == "modal"]
+    assert fastest.type not in again  # what is left no longer pays for a second run on the fastest GPU
+
+
+def test_a_provider_is_active_only_when_its_login_works_in_every_place(tmp_path, monkeypatch):
+    modal = FakeAdapter("modal", [], resets_in_days=9)
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store = make(tmp_path, modal, kaggle)
+    kaggle.validate_credentials = lambda: ValidationResult(False, "the API token is missing or not valid")
+    rows = th.check_providers(["kaggle"], retry_after_s=0)
+    assert rows[0]["not_working_on"] == ["this computer"]
+    assert store.get_provider("kaggle").status == ProviderStatus.UNAVAILABLE
+    monkeypatch.setenv("MODAL_TASK_ID", "ta-1")  # the cloud scheduler has a working copy of the login
+    kaggle.validate_credentials = lambda: ValidationResult(True, "ok")
+    th.check_providers(["kaggle"], retry_after_s=0)
+    p = store.get_provider("kaggle")
+    assert p.health["cloud"]["ok"] and not p.health["this computer"]["ok"]
+    assert p.status == ProviderStatus.UNAVAILABLE  # still broken on the computer: not shown as working
+    monkeypatch.delenv("MODAL_TASK_ID")
+    th.check_providers(["kaggle"], retry_after_s=0)
+    assert store.get_provider("kaggle").status == ProviderStatus.ACTIVE
+
+
+def test_modal_balance_is_the_official_number_and_goes_below_zero_when_the_card_is_billed():
+    from tierhopper.adapters.modal_adapter import credit_left
+
+    november = {"metered_cost": "34.10241326", "billed_cost": "3.35000000",
+                "adjustments": {"credits": "-30.00000000", "free_storage": "-0.54944111", "plan_cost": "0E-8",
+                                "network_egress_allowance": "-0.20297215"}}
+    assert credit_left(november) == -3.35
+    assert credit_left({"metered_cost": "4.5", "adjustments": {"credits": "-30"}}) == 25.5
+
+
+def test_starting_tierhopper_again_keeps_what_each_place_knows_about_a_provider(tmp_path):
+    from tierhopper.registry import sync_registry
+
+    modal = FakeAdapter("modal", [], resets_in_days=9)
+    kaggle = FakeAdapter("kaggle", [], resets_in_days=1)
+    th, store = make(tmp_path, modal, kaggle)
+    kaggle.validate_credentials = lambda: ValidationResult(False, "no token")
+    th.check_providers(["kaggle"], retry_after_s=0)
+    sync_registry(store)  # what every new process does when it starts
+    p = store.get_provider("kaggle")
+    assert p.status == ProviderStatus.UNAVAILABLE and p.health["this computer"]["ok"] is False
+
+
+def test_the_paid_question_says_why_each_free_gpu_cannot_take_the_job():
+    from types import SimpleNamespace as N
+
+    from tierhopper.models import CreditSnapshot, ProviderKind
+
+    free = dict(kind=ProviderKind.FREE, status=ProviderStatus.ACTIVE)
+    providers = [N(id="kaggle", name="Kaggle", **free), N(id="modal", name="Modal", **free),
+                 N(id="lightning", name="Lightning AI", kind=ProviderKind.CREDIT_PROGRAM,
+                   status=ProviderStatus.UNAVAILABLE),
+                 N(id="runpod", name="RunPod", kind=ProviderKind.PAID, status=ProviderStatus.ACTIVE)]
+    rejected = [N(provider_id="kaggle", reason="no GPU with 40 GB+"),
+                N(provider_id="modal", reason="free credit used up"),
+                N(provider_id="lightning", reason="not answering (failed its health check)"),
+                N(provider_id="runpod", reason="paid provider needs your approval")]
+    credits = {"modal": CreditSnapshot(provider_id="modal", remaining=-3.4, unit=CreditUnit.USD,
+                                       source=CreditSource.API, expires_at=datetime(2026, 12, 1, tzinfo=UTC))}
+    why = TierHopper._why_not_free(rejected, providers, credits)
+    assert why == {"Kaggle": "has no GPU with 40 GB+", "Modal": "has no free credit left until Dec 1",
+                   "Lightning AI": "is not working right now"}
+    from tierhopper.service import paid_reason
+    text = paid_reason(why, "RunPod", 8.22)
+    assert "Kaggle: has no GPU with 40 GB+" in text and "RunPod for about $8.22" in text

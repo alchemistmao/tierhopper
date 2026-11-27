@@ -51,8 +51,8 @@ class MemoryStore:
         self.credits.append(snap)
         return snap
 
-    def latest_credit(self, provider_id: str) -> CreditSnapshot | None:
-        snaps = [s for s in self.credits if s.provider_id == provider_id]
+    def latest_credit(self, provider_id: str, source: str | None = None) -> CreditSnapshot | None:
+        snaps = [s for s in self.credits if s.provider_id == provider_id and source in (None, s.source.value)]
         return max(snaps, key=lambda s: s.measured_at) if snaps else None
 
     def get_or_create_project(self, slug: str) -> Project:
@@ -152,7 +152,7 @@ class MemoryStore:
         self.findings.append(finding)
 
     def list_findings(self, limit: int = 50) -> list[dict]:
-        return self.findings[-limit:]
+        return self.findings[-limit:][::-1]  # newest first, like the other stores
 
     def list_log_lines(self, attempt_id: str, limit: int = 200) -> list[str]:
         return [row["line"] for row in self.log_lines if row["attempt_id"] == attempt_id][-limit:]

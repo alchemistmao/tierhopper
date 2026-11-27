@@ -35,7 +35,7 @@ from tierhopper.models import (
 from tierhopper.progress import parse_counter
 from tierhopper.redact import redact
 from tierhopper.registry import sync_registry
-from tierhopper.routing import Candidate, plan_route, speed_of
+from tierhopper.routing import COST_MARGIN, Candidate, plan_route, speed_of
 from tierhopper.spec import JobSpec, load_spec
 from tierhopper.stats import ProviderStats, compute_stats, estimate_t4_hours
 from tierhopper.storage_r2 import Keys
@@ -50,6 +50,11 @@ NO_COMPILER_ENV = {"VLLM_USE_FLASHINFER_SAMPLER": "0"}
 WHY = {EndReason.ERROR: "the job hit an error there", EndReason.CREDIT_EXHAUSTED: "its free credit ran out",
        EndReason.PREEMPTED: "the machine was taken back", EndReason.SESSION_LIMIT: "its time limit was reached",
        EndReason.CANCELLED: "it was stopped"}
+
+
+def place() -> str:
+    """Where this process starts jobs from. Each place has its own copy of the provider logins."""
+    return "cloud" if os.environ.get("MODAL_TASK_ID") else "this computer"
 
 
 def paid_reason(failures: dict[str, str], provider: str, cost: float) -> str:
@@ -164,9 +169,52 @@ class TierHopper:
         else:
             used = self.month_usage_usd(provider.id) * (MODAL_OVERHEAD if provider.id == "modal" else 1)
         reading = self.adapter(provider).credit_remaining(provider, used_usd=used)
-        snap = CreditSnapshot(provider_id=provider.id, remaining=reading.remaining, unit=reading.unit,
+        remaining = reading.remaining
+        if reading.source == CreditSource.ESTIMATE and provider.credit_model.type == "monthly_usd":
+            # No official number from here (e.g. the cloud scheduler): start from the last official one and
+            # take off what ran since, instead of adding up our own records for the whole month.
+            anchored = self._since_official(provider)
+            remaining = anchored if anchored is not None else remaining
+        snap = CreditSnapshot(provider_id=provider.id, remaining=remaining, unit=reading.unit,
                               source=reading.source, expires_at=reading.resets_at)
         return self.store.add_credit_snapshot(snap)
+
+    def _since_official(self, provider: Provider) -> float | None:
+        official = self.store.latest_credit(provider.id, source=CreditSource.API.value)
+        month = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if official is None or official.measured_at < month:
+            return None
+        spent = 0.0
+        prices = {g.type: g.usd_per_hour for g in provider.gpu_catalog}
+        for a in self.store.list_attempts_since(month):
+            if a.provider_id != provider.id or (a.ended_at and a.ended_at <= official.measured_at):
+                continue
+            ran = ((a.ended_at or now()) - max(a.started_at, official.measured_at)).total_seconds() / 3600
+            spent += max(ran, 0.0) * prices.get(a.gpu_type, 0.0)
+        return official.remaining - spent * COST_MARGIN
+
+    def _committed(self) -> dict[str, float]:
+        """What the jobs running now are still expected to use on each provider (dollars, or GPU hours on
+        hour-based credit). Two jobs must not both count on the same free dollars."""
+        providers = {p.id: p for p in self.store.list_providers()}
+        out: dict[str, float] = {}
+        for a in self.store.list_active_attempts():
+            p = providers.get(a.provider_id)
+            if p is None or p.kind == ProviderKind.PAID:
+                continue
+            try:
+                shard = self.store.get_shard(a.shard_id)
+                job = self.store.get_job(shard.job_id)
+                gpu = next((g for g in p.gpu_catalog if g.type == a.gpu_type), None)
+                speed = speed_of(gpu, self.stats().get(p.id)) if gpu else 1.0
+                t4 = job.estimate.get("t4_hours")
+                hours = (t4 * (1 - shard.progress) / speed) if t4 else self._spec(job).timeout_minutes / 60
+            except Exception:  # noqa: BLE001 - never block routing on one odd record
+                continue
+            hourly = p.credit_model.type == "weekly_hours"
+            out[p.id] = out.get(p.id, 0.0) + (hours if hourly else hours * (gpu.usd_per_hour if gpu else 0)
+                                              * COST_MARGIN)
+        return out
 
     def refresh_stale_credits(self, max_age: timedelta = timedelta(minutes=10)) -> int:
         """Keep the credit numbers current while jobs run (the dashboard reads the latest snapshot)."""
@@ -210,13 +258,19 @@ class TierHopper:
         with ThreadPoolExecutor(max_workers=max(len(providers), 1)) as pool:
             outcomes = list(pool.map(check, providers))
         rows, down, back = [], [], []
+        here = place()
         for p, (ok, detail) in zip(providers, outcomes, strict=True):
             was = p.status
-            new = ProviderStatus.ACTIVE if ok else ProviderStatus.UNAVAILABLE
-            if new != was:
-                self.store.upsert_provider(p.model_copy(update={"status": new, "updated_at": now()}))
+            with contextlib.suppress(NotFound):
+                p = self.store.get_provider(p.id)  # keep what the other place wrote while we were checking
+            health = {**p.health, here: {"ok": ok, "detail": redact(detail)[:300], "at": now().isoformat()}}
+            # Active means it works everywhere jobs are started from: this computer and the cloud scheduler.
+            broken = sorted(where for where, h in health.items() if not h.get("ok"))
+            new = ProviderStatus.UNAVAILABLE if broken else ProviderStatus.ACTIVE
+            self.store.upsert_provider(p.model_copy(update={"status": new, "health": health,
+                                                            "updated_at": now()}))
             row = {"provider": p.id, "name": p.name, "ok": ok, "detail": redact(detail)[:300],
-                   "changed": new != was}
+                   "changed": new != was, "checked_from": here, "not_working_on": broken}
             if not ok:
                 row["fix"] = f"tierhopper connect {p.id}"
                 if new != was:
@@ -228,6 +282,19 @@ class TierHopper:
             with contextlib.suppress(Exception):
                 self.notifier.providers_health(down, back)
         return rows
+
+    def check_if_stale(self, max_age: timedelta = timedelta(minutes=30)) -> None:
+        """A provider shown as active must be working: re-check from this place any login not checked lately."""
+        here, stale = place(), []
+        for p in self.store.list_providers():
+            if p.status not in (ProviderStatus.ACTIVE, ProviderStatus.UNAVAILABLE) or p.adapter not in IMPLEMENTED:
+                continue
+            at = (p.health.get(here) or {}).get("at")
+            if not at or now() - datetime.fromisoformat(at) > max_age:
+                stale.append(p.id)
+        if stale:
+            with contextlib.suppress(Exception):
+                self.check_providers(stale, retry_after_s=3)
 
     def credits_status(self, refresh: bool = True) -> list[dict[str, Any]]:
         rows = []
@@ -267,11 +334,13 @@ class TierHopper:
     # ---- submit --------------------------------------------------------------------------------
     def submit_job(self, spec_path: str, dry_run: bool = False) -> dict[str, Any]:
         spec, root = load_spec(spec_path)
+        self.check_if_stale()
         providers = self.store.list_providers()
         stats = self.stats()
         t4_hours, source = self._t4_hours(spec, stats)
         candidates, rejected = plan_route(spec, providers, self._routing_credits(providers, refresh=True),
-                                          stats=stats, busy=self._busy(), t4_hours=t4_hours)
+                                          stats=stats, busy=self._busy(), t4_hours=t4_hours,
+                                          committed=self._committed())
         plan = [{"provider": c.provider.id, "gpu": c.gpu.type, "score": c.score} for c in candidates]
         why_not = {r.provider_id: r.reason for r in rejected}
         items = shard_items(spec, root)
@@ -295,7 +364,16 @@ class TierHopper:
         for idx, chunk in enumerate(items):
             self.store.create_shard(Shard(job_id=job.id, idx=idx, total=len(items), items=chunk))
         self._event(job, "submitted", plan=plan, shards=len(items))
-        if reason:
+        if reason and not candidates:
+            # Too big for the automatic limit AND nothing free can run it: one question (pay, or wait for
+            # free credit), not a size question followed by a payment question.
+            first = self.store.list_shards(job.id)[0]
+            if self._ask_for_paid(job, first, spec, providers, self._routing_credits(providers, refresh=False),
+                                  set()):
+                reason = self.store.get_job(job.id).estimate["approval"]["reason"]
+            else:
+                self._request_approval(job, reason)
+        elif reason:
             self._request_approval(job, reason)
         else:
             self._fill_parallel(job)
@@ -486,11 +564,14 @@ class TierHopper:
             return None
         spec = self._spec(job)
         providers = self.store.list_providers()
+        # A fresh balance at the moment of choosing: a number from ten minutes ago can already be spent.
+        self.refresh_stale_credits(timedelta(minutes=2))
         credits = {p.id: self.store.latest_credit(p.id) for p in providers}
         allow_paid = bool(job.spec.get("_allow_paid"))
         left = (job.estimate.get("t4_hours") or 0) * (1 - shard.progress) or None  # what is still to do
         candidates, _ = plan_route(spec, providers, credits, exclude=exclude, allow_paid=allow_paid,
-                                   stats=self.stats(), busy=self._busy(), t4_hours=left)
+                                   stats=self.stats(), busy=self._busy(), t4_hours=left,
+                                   committed=self._committed())
         package = None
         failures: dict[str, str] = {}
         for a in attempts:
@@ -555,9 +636,11 @@ class TierHopper:
         if not paid:
             return False
         # A free provider that is only busy will free up: wait for it instead of asking to pay.
-        free_later, _ = plan_route(spec, providers, credits, exclude=exclude, allow_paid=False)
+        free_later, why_not = plan_route(spec, providers, credits, exclude=exclude, allow_paid=False,
+                                         t4_hours=job.estimate.get("t4_hours"), committed=self._committed())
         if free_later:
             return False
+        failures = {**self._why_not_free(why_not, providers, credits), **(failures or {})}
         best = paid[0]
         cost = self._paid_cost(job, shard, best)
         spent = self.month_spent_usd(best.provider.id)
@@ -569,6 +652,30 @@ class TierHopper:
         self._request_approval(job, paid_reason(failures or {}, best.provider.name, cost),
                                paid={"provider": best.provider.id, "gpu": best.gpu.type, "usd": cost})
         return True
+
+    @staticmethod
+    def _why_not_free(rejected: list, providers: list[Provider], credits: dict) -> dict[str, str]:
+        """Why each free provider cannot take the job now, by provider name, in the owner's terms."""
+        by_id = {p.id: p for p in providers}
+        out: dict[str, str] = {}
+        for r in rejected:
+            p = by_id.get(r.provider_id)
+            if p is None or p.kind == ProviderKind.PAID or p.status not in (ProviderStatus.ACTIVE,
+                                                                           ProviderStatus.UNAVAILABLE):
+                continue
+            if r.reason == "already tried for this job":
+                continue  # what happened there is told by the attempt itself
+            text = r.reason
+            if r.reason.startswith("no GPU with"):
+                text = "has " + r.reason  # "has no GPU with 40 GB+"
+            elif r.reason.startswith("not answering"):
+                text = "is not working right now"
+            elif "credit" in r.reason:
+                snap = credits.get(p.id)
+                until = f" until {snap.expires_at:%b} {snap.expires_at.day}" if snap and snap.expires_at else ""
+                text = (r.reason if "does not cover" in r.reason else "has no free credit left") + until
+            out[p.name] = text
+        return out
 
     def _paid_cost(self, job: Job, shard: Shard, cand: Candidate) -> float:
         t4_left = (job.estimate.get("t4_hours") or 1.0) * (1 - shard.progress)
@@ -722,6 +829,7 @@ class TierHopper:
         with contextlib.suppress(Exception):  # housekeeping must never block scheduling
             self.store.prune_telemetry(now() - timedelta(days=14))
         self.refresh_stale_credits()
+        self.check_if_stale()
         with contextlib.suppress(Exception):  # an unavailable provider comes back as soon as it answers
             down = [p.id for p in self.store.list_providers() if p.status == ProviderStatus.UNAVAILABLE]
             if down:
@@ -951,7 +1059,8 @@ class TierHopper:
         credits = {p.id: self.store.latest_credit(p.id) for p in providers}
         elsewhere = self._excluded(shard) | {provider.id}
         free, _ = plan_route(self._spec(job), providers, credits, exclude=elsewhere, allow_paid=False,
-                             stats=self.stats(), busy=self._busy())
+                             stats=self.stats(), busy=self._busy(), t4_hours=job.estimate.get("t4_hours"),
+                             committed=self._committed())
         if not free:
             return False
         try:
@@ -1333,7 +1442,14 @@ class TierHopper:
             return False, attempt.message or f"smoke test ended as {attempt.status.value}"
         result = self.results_dir / job.id / "results" / "result.json"
         if not result.is_file():
-            return False, "smoke job finished but result.json is missing"
+            # The cloud scheduler may have closed the job first: then the results are in storage, not here yet.
+            with contextlib.suppress(Exception):
+                self.fetch_results(job.id)
+            found = sorted((self.results_dir / job.id).rglob("result.json")) if (
+                self.results_dir / job.id).is_dir() else []
+            if not found:
+                return False, "smoke job finished but result.json is missing"
+            result = found[0]
         info = json.loads(result.read_text())
         if not info.get("cuda"):
             return False, "job ran without a GPU"

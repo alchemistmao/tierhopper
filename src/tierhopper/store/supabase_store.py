@@ -77,9 +77,11 @@ class SupabaseStore:
         self._t("credit_snapshots").insert(_row(snap)).execute()
         return snap
 
-    def latest_credit(self, provider_id: str) -> CreditSnapshot | None:
-        resp = (self._t("credit_snapshots").select("*").eq("provider_id", provider_id)
-                .order("measured_at", desc=True).limit(1).execute())
+    def latest_credit(self, provider_id: str, source: str | None = None) -> CreditSnapshot | None:
+        query = self._t("credit_snapshots").select("*").eq("provider_id", provider_id)
+        if source:
+            query = query.eq("source", source)
+        resp = query.order("measured_at", desc=True).limit(1).execute()
         return CreditSnapshot.model_validate(resp.data[0]) if resp.data else None
 
     # projects / jobs

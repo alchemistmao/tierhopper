@@ -82,6 +82,15 @@ class ProviderAdapter(Protocol):
     def max_session(self, provider: Provider) -> timedelta | None: ...
 
 
+def apt_step(packages: list[str]) -> str | None:
+    """Shell step that installs the job's `apt:` packages (names are validated by the spec). Every provider
+    must run it: a job that asks for a system tool cannot find it missing on the next provider it hops to."""
+    if not packages:
+        return None
+    return ("(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+            f"--no-install-recommends {' '.join(packages)} >/dev/null)")
+
+
 def pack_workdir(root: Path, extra_excludes: set[str] | None = None) -> bytes:
     """Tar+gzip the job directory, skipping secrets, VCS and artefact folders."""
     excludes = DEFAULT_EXCLUDES | (extra_excludes or set())

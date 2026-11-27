@@ -26,6 +26,7 @@ from tierhopper.adapters.base import (
     AttemptState,
     CreditReading,
     ValidationResult,
+    apt_step,
 )
 from tierhopper.models import AttemptStatus, CreditSource, CreditUnit, Provider
 from tierhopper.redact import redact
@@ -51,6 +52,7 @@ from pathlib import Path
 PACKAGE = "{package}"
 COMMAND = {command}
 REQUIREMENTS = {requirements}
+APT = {apt}
 OUTPUTS = {outputs}
 RUNNER_CONFIG = {runner_config}
 
@@ -58,6 +60,8 @@ work = Path("/kaggle/temp/job")
 work.mkdir(parents=True, exist_ok=True)
 with tarfile.open(fileobj=io.BytesIO(base64.b64decode(PACKAGE)), mode="r:gz") as tar:
     tar.extractall(work, filter="data")
+if APT:  # system tools the job asked for (`apt:` in tierhopper.yaml)
+    subprocess.run(APT, shell=True, check=True)
 if REQUIREMENTS:
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(work / REQUIREMENTS)], check=True)
 started = time.time()
@@ -138,6 +142,7 @@ class KaggleAdapter:
             # repr(): Python literals (json would write `null`/`true`, which are not Python)
             command=repr(plan.command),
             requirements=repr(spec.requirements),
+            apt=repr(apt_step(spec.apt)),
             outputs=repr(list(spec.outputs)),
             runner_config=repr(json.dumps(plan.runner_config)),
         )

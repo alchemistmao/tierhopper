@@ -212,14 +212,111 @@ def test_a_provider_status_from_a_newer_version_does_not_break_listing(tmp_path)
     assert th.submit_job(EXAMPLE)["status"] == "running"
 
 
-def test_a_submitted_job_tells_the_caller_how_to_be_told_when_it_ends(monkeypatch):
+def test_the_caller_gets_the_job_and_how_to_wait_but_not_where_it_runs_or_what_it_costs(monkeypatch):
     from tierhopper import mcp_server
 
-    class Fake:
-        def submit_job(self, spec_path, dry_run=False):
-            return {"dry_run": True} if dry_run else {"job_id": "abc123", "status": "running"}
+    plan = [{"provider": "modal", "gpu": "H100", "score": 1}]
+    base = {"plan": plan, "not_used": {"kaggle": "busy"}, "estimate": {"gpu_hours": 0.5, "market_usd": 2.0,
+                                                                       "gpu": "H100"}, "shards": 1}
 
-    monkeypatch.setattr(mcp_server, "_service", lambda: Fake())
+    class Fake:
+        status = "running"
+
+        def submit_job(self, spec_path, dry_run=False):
+            if dry_run:
+                return {"dry_run": True, "needs_approval": None, **base}
+            return {"job_id": "abc123", "status": self.status, "needs_approval": "pay $2 on RunPod?",
+                    "approve_command": "tierhopper approve abc123", "providers": ["modal"], **base}
+
+        def job_status(self, job_id):
+            return {"job_id": job_id, "status": self.status, "progress": 0.4,
+                    "stops": [{"shard": 0, "provider": "modal", "gpu": "H100", "status": "running",
+                               "gpu_minutes": 3.0, "link": "https://modal.com/x"}]}
+
+    fake = Fake()
+    monkeypatch.setattr(mcp_server, "_service", lambda: fake)
     submit = getattr(mcp_server.submit_job, "fn", mcp_server.submit_job)
-    assert "when_it_ends" not in submit("x", dry_run=True)
-    assert "tierhopper watch abc123" in submit("x")["when_it_ends"]
+    status = getattr(mcp_server.job_status, "fn", mcp_server.job_status)
+    dry = submit("x", dry_run=True)
+    assert dry["valid"] and "can_start_now" not in dry and "when_it_ends" not in dry
+    tools = {name for name in dir(mcp_server) if hasattr(getattr(mcp_server, name), "fn")
+             or name in ("submit_job", "job_status", "credits_status", "list_providers")}
+    for hidden in ("credits_status", "list_providers", "check_providers", "usage_report", "connect_provider"):
+        assert not hasattr(mcp_server, hidden), hidden  # credit and providers are not the caller's business
+    assert "submit_job" in tools
+    skill = (Path(mcp_server.__file__).parent / "skill" / "SKILL.md").read_text().lower()
+    for word in ("modal", "kaggle", "runpod", "lightning", "credits_status"):
+        assert word not in skill, word
+    got = submit("x")
+    assert "tierhopper watch abc123" in got["when_it_ends"] and got["estimated_gpu_hours"] == 0.5
+    text = str(dry) + str(got)
+    for word in ("modal", "kaggle", "H100", "RunPod", "approve abc123", "market_usd", "plan"):
+        assert word not in text, word
+    seen = status("abc123")
+    assert seen["runs"][0]["gpu_minutes"] == 3.0 and "modal" not in str(seen) and "H100" not in str(seen)
+    fake.status = "awaiting_approval"
+    for answer in (submit("x"), status("abc123")):
+        assert "not your question" in answer["note"] and "RunPod" not in str(answer)
+    assert "never run `tierhopper approve`" in mcp_server.INSTRUCTIONS.replace("\n", " ") or \
+        "never approve a job yourself" in mcp_server.INSTRUCTIONS.replace("\n", " ")
+
+
+def test_system_packages_a_job_asks_for_are_installed_on_every_provider():
+    import inspect
+
+    from tierhopper.adapters import kaggle_adapter, lightning_adapter, modal_adapter, runpod_adapter
+    from tierhopper.adapters.base import apt_step
+
+    assert apt_step([]) is None
+    assert "apt-get install" in apt_step(["zstd", "aria2"]) and apt_step(["zstd", "aria2"]).count("aria2") == 1
+    for module in (kaggle_adapter, lightning_adapter, runpod_adapter):
+        assert "apt_step(" in inspect.getsource(module), module.__name__
+    assert "spec.apt" in inspect.getsource(modal_adapter)
+    script = kaggle_adapter._RUNNER.format(package="", command="'x'", requirements="None", outputs="[]",
+                                           runner_config="'{}'", apt=repr(apt_step(["aria2"])))
+    compile(script, "run.py", "exec")
+    assert script.index("apt-get install") < script.index("COMMAND, shell=True")
+
+
+def test_a_job_with_its_own_image_only_goes_where_images_run_and_old_jobs_keep_their_history():
+    from tierhopper.registry import load_registry
+    from tierhopper.routing import plan_route
+    from tierhopper.spec import JobSpec
+
+    providers = [p.model_copy(update={"status": "active"}) for p in load_registry()]
+    plain = JobSpec(name="a", entrypoint="python x.py")
+    own = JobSpec(name="a", entrypoint="python x.py", image="pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime")
+    ok, rejected = plan_route(own, providers, {}, allow_paid=True)
+    assert [c.provider.id for c in ok] == ["modal"]
+    assert any(r.provider_id == "kaggle" and "image" in r.reason for r in rejected)
+    assert len(plan_route(plain, providers, {}, allow_paid=True)[0]) > 1
+    assert "image" not in plain.model_dump_json(exclude_none=True) and plain.spec_hash() != own.spec_hash()
+    import hashlib
+    import json
+    old = plain.model_dump(exclude={"name", "estimate_hours", "allow_paid", "image"})
+    assert plain.spec_hash() == hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def test_one_odd_run_does_not_rewrite_the_gpu_speed_table():
+    from collections import defaultdict
+
+    from tierhopper.models import Attempt, EndReason, Job, Shard
+    from tierhopper.stats import ProviderStats, _learn_speed, static_speed
+    from tierhopper.store import MemoryStore
+
+    store = MemoryStore()
+    project = store.get_or_create_project("p")
+    job = store.create_job(Job(project_id=project.id, name="j", spec={}, spec_hash="h"))
+    shard = store.create_shard(Shard(job_id=job.id, idx=0, total=1))
+
+    def run(gpu, seconds):
+        return Attempt(shard_id=shard.id, provider_id="modal", gpu_type=gpu, end_reason=EndReason.COMPLETED,
+                       progress_start=0.0, progress_end=1.0, gpu_seconds=seconds)
+
+    stats = defaultdict(lambda: ProviderStats(""))
+    _learn_speed(store, [run("A100-80GB", 5770)] + [run("H100", 284) for _ in range(6)], stats)
+    assert "H100" not in stats["modal"].speed  # the single A100 run is not a baseline: nothing is learned
+    stats = defaultdict(lambda: ProviderStats(""))
+    _learn_speed(store, [run("A100-80GB", 5770), run("A100-80GB", 5770)] + [run("H100", 284) for _ in range(6)],
+                 stats)
+    assert stats["modal"].speed["H100"] <= static_speed("H100") * 2  # corrected, never multiplied by six

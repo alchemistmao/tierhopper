@@ -20,7 +20,8 @@ def load_registry(path: Path = DEFAULT_REGISTRY) -> list[Provider]:
 
 
 def sync_registry(store: Store, path: Path = DEFAULT_REGISTRY) -> list[Provider]:
-    """Insert new providers and refresh static fields, keeping the live `status` from the store."""
+    """Insert new providers and refresh static fields, keeping what is live in the store: `status` and the
+    `health` each place recorded."""
     synced = []
     for seed in load_registry(path):
         try:
@@ -28,7 +29,8 @@ def sync_registry(store: Store, path: Path = DEFAULT_REGISTRY) -> list[Provider]
         except NotFound:
             synced.append(store.upsert_provider(seed))
             continue
-        seed = seed.model_copy(update={"status": current.status, "updated_at": current.updated_at})
+        seed = seed.model_copy(update={"status": current.status, "health": current.health,
+                                       "updated_at": current.updated_at})
         if seed.model_dump() == current.model_dump():
             synced.append(current)  # nothing changed: do not rewrite the row (a status change may be landing)
             continue

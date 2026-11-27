@@ -68,6 +68,10 @@ class JobSpec(_Strict):
     shard: ShardConfig | None = None
     serve: ServeConfig | None = None
     outputs: list[str] = Field(default_factory=list)
+    # A ready container image from a public registry (e.g. "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime").
+    # It must have Python with pip. Without it, each provider uses its own default environment.
+    image: str | None = Field(default=None, max_length=255,
+                              pattern=r"^[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?(@sha256:[a-f0-9]{64})?$")
     cuda_compiler: bool = False  # full CUDA toolkit (nvcc) for code that compiles GPU kernels at run time
     allow_paid: bool = False
 
@@ -84,6 +88,8 @@ class JobSpec(_Strict):
     def spec_hash(self) -> str:
         """Stable hash of the fields that affect runtime (used for history-based estimates)."""
         relevant = self.model_dump(exclude={"name", "estimate_hours", "allow_paid"})
+        if relevant.get("image") is None:
+            relevant.pop("image")  # jobs written before `image:` existed keep their hash, and their history
         raw = json.dumps(relevant, sort_keys=True).encode()
         return hashlib.sha256(raw).hexdigest()[:16]
 

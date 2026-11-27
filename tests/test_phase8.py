@@ -84,3 +84,29 @@ def test_dry_run_saves_nothing(tmp_path):
     out = discovery.run_discovery(store, client=client, dry_run=True)
     assert out["findings"][0]["status"] == "qualified" and not store.findings
     assert "novagpu" not in {p.id for p in store.list_providers()}
+
+
+def test_a_run_settles_open_candidates_skips_rejected_ones_and_says_what_it_cost():
+    from types import SimpleNamespace
+
+    from tierhopper import discovery
+
+    findings = [  # newest first
+        {"name": "Baseten", "status": "needs_review"},
+        {"name": "AMD Developer Cloud (AMD AI Developer Program)", "status": "needs_review"},
+        {"name": "AMD Developer Cloud (AMD AI Developer Program credits)", "status": "needs_review"},
+        {"name": "Thunder Compute", "status": "rejected"},
+        {"name": "Kaggle Notebooks", "status": "needs_review"},
+    ]
+    open_, closed = discovery.earlier(findings, known={"kaggle", "modal"})
+    assert open_ == ["Baseten", "AMD Developer Cloud (AMD AI Developer Program)"]  # each provider once
+    assert closed == ["Thunder Compute"]
+
+    usage: dict = {}
+    discovery.add_usage(usage, SimpleNamespace(input_tokens=1_000_000, output_tokens=100_000,
+                                               cache_creation_input_tokens=0, cache_read_input_tokens=0,
+                                               server_tool_use=SimpleNamespace(web_search_requests=12,
+                                                                               web_fetch_requests=5)))
+    discovery.add_usage(usage, None)
+    assert usage["web_search_requests"] == 12 and usage["web_fetch_requests"] == 5
+    assert discovery.token_cost_usd(usage, "claude-opus-5-5") == 6.0  # 1M in x $4 + 0.1M out x $20

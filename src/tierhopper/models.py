@@ -119,6 +119,9 @@ class Provider(BaseModel):
     source: str = "seed"
     confidence: float = 1.0
     notes: str | None = None
+    # Last login check from each place that starts jobs ("this computer", "cloud"):
+    # {place: {"ok": bool, "detail": str, "at": iso}}. Active means every place that checked can use it.
+    health: dict[str, Any] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=now)
 
     @field_validator("status", mode="before")

@@ -30,7 +30,7 @@ export type Overview = {
   streakDays: number;
   counts: Record<string, number>;
   projects: ProjectRow[];
-  credits: { id: string; name: string; left: string; pct: number; note: string; color: string; paid: boolean }[];
+  credits: { id: string; name: string; left: string; pct: number; note: string; color: string; paid: boolean; down: boolean; estimated: boolean }[];
   milestones: { label: string; hit: boolean }[];
   gpuHoursMonth: number;
   /** Where each running project really is; `from` is set only for a few minutes after a real switch. */
@@ -229,15 +229,23 @@ export async function overview(): Promise<Overview> {
       const remaining = c ? Number(c.remaining) : total;
       const hours = c?.unit === "gpu_hours";
       const resets = c?.expires_at ? new Date(c.expires_at) : null;
-      const note = p.status === "unavailable" ? `Not answering · fix: tierhopper connect ${p.id}`
+      // Where the login does not work: this computer, the cloud scheduler, or both.
+      const broken = Object.entries((p.health ?? {}) as Record<string, { ok?: boolean }>)
+        .filter(([, h]) => !h?.ok).map(([where]) => where);
+      const over = !hours && remaining < 0;
+      const note = p.status === "unavailable"
+        ? `Not working${broken.length ? ` on ${broken.join(" and ")}` : ""} · fix: tierhopper connect ${p.id}`
+        : over ? `Free credit is over · ${money(-remaining)} billed on your card this month`
         : p.kind === "paid" ? "Only with your OK"
         : resets ? `Resets ${resets.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}` : c?.source === "estimate" ? "Estimated" : "";
       return {
         id: p.id,
         name: p.name,
-        left: hours ? `${remaining.toFixed(1)}h / ${total}h` : `${money(remaining)} / ${money(total)}`,
-        pct: total ? Math.min(100, (remaining / total) * 100) : 0,
+        left: hours ? `${remaining.toFixed(1)}h / ${total}h` : `${money(Math.max(remaining, 0))} / ${money(total)}`,
+        pct: total ? Math.max(0, Math.min(100, (remaining / total) * 100)) : 0,
         note,
+        down: p.status === "unavailable" || over,
+        estimated: !!c && c.source === "estimate" && p.status !== "unavailable",
         color: PROVIDER_COLOR[p.id] ?? "var(--brand)",
         paid: p.kind === "paid",
       };

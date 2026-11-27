@@ -140,3 +140,12 @@ def test_vllm_sampler_needs_no_compiler_unless_the_job_asks(tmp_path):
     envs = {p.spec.cuda_compiler: p.runner_config["env"] for p in plans}
     assert envs[False]["VLLM_USE_FLASHINFER_SAMPLER"] == "0"
     assert "VLLM_USE_FLASHINFER_SAMPLER" not in envs[True]
+
+
+def test_the_test_suite_cannot_reach_the_real_keychain():
+    import keyring
+
+    from tierhopper import credentials
+
+    assert keyring.get_password.__module__ == "conftest" or "conftest" in keyring.delete_password.__module__
+    assert credentials.get_secret("supabase", "secret_key") is None  # the owner's real secrets are out of reach
